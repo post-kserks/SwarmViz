@@ -5,9 +5,12 @@
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>SwarmViz v3.1 — Multi-Agent Visualizer</title>
-    <link rel="preconnect" href="https://fonts.googleapis.com" />
-    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet" />
+    <!-- No webfont <link> here on purpose. SwarmViz serves everything from the
+         embedded binary and must render on a machine with no internet at all;
+         a render-blocking stylesheet from fonts.googleapis.com leaves the page
+         blank until it times out whenever that host is slow or blocked. The
+         font stacks in tailwind.config.js already fall back to system-ui and
+         ui-monospace, so we simply use the local fonts. -->
   </head>
   <body class="bg-[#0a0b0e] text-[#e2e8f0] font-sans antialiased overflow-hidden select-none">
     <div id="root"></div>
