@@ -424,3 +424,79 @@ func TestServer_StaticFileServingAndSPAFallback(t *testing.T) {
 	}
 }
 
+
+// writePump drains the pending send queue into a single text frame, joining
+// the envelopes with envelopeSeparator. A client that assumes "one frame ==
+// one envelope" (JSON.parse / ReadJSON on the whole payload) silently drops
+// every batched event, which is what broke the UI: a single file edit always
+// emits LIVE_DIFF_STREAM + FILE_TREE_UPDATE + LOC_DELTA_UPDATE at once.
+//
+// This test pins the framing contract: a frame is newline-delimited, every
+// segment is a standalone envelope, and no event is lost to batching.
+func TestServer_CoalescedFrameIsNewlineDelimited(t *testing.T) {
+	eventHub := hub.NewEventHub()
+	srv := NewServer(eventHub, 1000, nil, nil)
+	defer srv.Close()
+
+	ts := createOrPipeTestServer(t, srv)
+	defer ts.cleanup()
+
+	ws, err := ts.Dial("/ws")
+	if err != nil {
+		t.Fatalf("failed to dial websocket: %v", err)
+	}
+	defer ws.Close()
+
+	var init WSEnvelope
+	if err := ws.ReadJSON(&init); err != nil {
+		t.Fatalf("failed to read init state: %v", err)
+	}
+
+	// Burst-broadcast so writePump has a non-empty queue when it wakes up.
+	const burst = 200
+	for i := 0; i < burst; i++ {
+		srv.BroadcastEvent("BURST_EVENT", map[string]int{"i": i})
+	}
+
+	seen := make(map[uint64]bool)
+	coalesced := 0
+	_ = ws.SetReadDeadline(time.Now().Add(10 * time.Second))
+
+	for len(seen) < burst {
+		_, frame, err := ws.ReadMessage()
+		if err != nil {
+			t.Fatalf("read frame after %d/%d envelopes: %v", len(seen), burst, err)
+		}
+
+		segments := strings.Split(string(frame), "\n")
+		if len(segments) > 1 {
+			coalesced++
+		}
+
+		for _, seg := range segments {
+			if seg == "" {
+				t.Fatalf("empty segment in frame %q: separator handling is off", frame)
+			}
+			var env WSEnvelope
+			if err := json.Unmarshal([]byte(seg), &env); err != nil {
+				t.Fatalf("segment is not a standalone envelope: %v\nsegment: %q", err, seg)
+			}
+			if env.Type != "BURST_EVENT" {
+				t.Fatalf("unexpected envelope type %q in burst", env.Type)
+			}
+			if seen[env.Seq] {
+				t.Fatalf("envelope seq=%d delivered twice", env.Seq)
+			}
+			seen[env.Seq] = true
+		}
+	}
+
+	if len(seen) != burst {
+		t.Fatalf("expected %d envelopes, got %d", burst, len(seen))
+	}
+	if coalesced == 0 {
+		t.Fatalf("no frame carried more than one envelope: the burst never "+
+			"exercised batching, so this test proves nothing (%d frames read)", len(seen))
+	}
+	t.Logf("%d/%d frames carried multiple envelopes", coalesced, len(seen))
+}

@@ -15,6 +15,14 @@ const (
 	pongWait       = 20 * time.Second
 	pingPeriod     = 15 * time.Second
 	maxMessageSize = 512 * 1024
+
+	// writePump coalesces every envelope pending in the send queue into one
+	// text frame, separated by this byte. Clients MUST split on it before
+	// parsing — a frame is 1..N envelopes, never guaranteed to be exactly one.
+	// Go escapes newlines inside JSON strings, so this byte only ever appears
+	// as a separator. The browser side of this contract lives in
+	// frontend/src/hooks/useSwarmSocket.ts (ws.onmessage).
+	envelopeSeparator = '\n'
 )
 
 var upgrader = websocket.Upgrader{
@@ -165,7 +173,7 @@ func (c *Client) writePump() {
 
 			n := len(c.send)
 			for i := 0; i < n; i++ {
-				_, _ = w.Write([]byte{'\n'})
+				_, _ = w.Write([]byte{envelopeSeparator})
 				_, _ = w.Write(<-c.send)
 			}
 

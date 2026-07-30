@@ -50,18 +50,25 @@ export function useSwarmSocket() {
     };
 
     ws.onmessage = (event) => {
-      try {
-        const envelope: WSEventEnvelope = JSON.parse(event.data);
-        if (envelope.type === 'PING') {
-          ws.send(JSON.stringify({ type: 'PONG' }));
-          return;
+      // writePump drains the send queue into ONE text frame, joining the
+      // envelopes with '\n' — so a frame holds 1..N of them, not exactly one.
+      // Go escapes newlines inside strings, so a raw '\n' is always a
+      // separator and never part of an envelope.
+      for (const line of (event.data as string).split('\n')) {
+        if (!line) continue;
+        try {
+          const envelope: WSEventEnvelope = JSON.parse(line);
+          if (envelope.type === 'PING') {
+            ws.send(JSON.stringify({ type: 'PONG' }));
+            continue;
+          }
+          if (envelope.seq && envelope.seq > 0) {
+            setLastSeq(envelope.seq);
+          }
+          handleWSEvent(envelope);
+        } catch (err) {
+          console.error('Failed to parse WS message:', err);
         }
-        if (envelope.seq && envelope.seq > 0) {
-          setLastSeq(envelope.seq);
-        }
-        handleWSEvent(envelope);
-      } catch (err) {
-        console.error('Failed to parse WS message:', err);
       }
     };
 
