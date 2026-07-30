@@ -14,6 +14,10 @@ type CopierOptions struct {
 	RepoPath    string
 	MaxRepoSize int64
 	PID         int
+	// RunID, if set, disambiguates the shadow directory instead of PID.
+	// Needed when a single process runs multiple ShadowCopiers (one per
+	// watched project) that would otherwise collide on swarmviz_run_<PID>.
+	RunID string
 }
 
 type CopyResult struct {
@@ -29,10 +33,14 @@ type ShadowCopier struct {
 }
 
 func NewShadowCopier(opts CopierOptions) *ShadowCopier {
-	if opts.PID <= 0 {
-		opts.PID = os.Getpid()
+	disambiguator := opts.RunID
+	if disambiguator == "" {
+		if opts.PID <= 0 {
+			opts.PID = os.Getpid()
+		}
+		disambiguator = fmt.Sprintf("%d", opts.PID)
 	}
-	shadowDir := filepath.Join(os.TempDir(), fmt.Sprintf("swarmviz_run_%d", opts.PID))
+	shadowDir := filepath.Join(os.TempDir(), fmt.Sprintf("swarmviz_run_%s", disambiguator))
 	return &ShadowCopier{
 		opts:      opts,
 		shadowDir: shadowDir,

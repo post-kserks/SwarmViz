@@ -1,6 +1,7 @@
 import React from 'react';
 import { Activity, AlertTriangle } from 'lucide-react';
 import { useSwarmStore } from '../../store/useSwarmStore';
+import { ProjectSwitcher } from './ProjectSwitcher';
 
 export const Header: React.FC = () => {
   const { connectionStatus, serverWarning, isDegraded, clearServerWarning } = useSwarmStore((state) => ({
@@ -32,6 +33,8 @@ export const Header: React.FC = () => {
             <AlertTriangle className="w-3.5 h-3.5" /> DEGRADED MODE
           </span>
         )}
+
+        <ProjectSwitcher />
       </div>
 
       {serverWarning && (

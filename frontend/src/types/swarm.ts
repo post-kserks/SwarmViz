@@ -1,5 +1,15 @@
 export type ConnectionStatus = 'connecting' | 'connected' | 'reconnecting' | 'disconnected';
 
+// One entry from GET /api/projects. basePath is prepended to /ws and /api/...
+// to reach this project's backend runtime ("" for the always-on root project).
+export interface ProjectSummary {
+  id: string;
+  name: string;
+  path: string;
+  basePath: string;
+  watching?: boolean;
+}
+
 export type AgentType = 'orchestrator' | 'teamwork' | 'challenger' | 'worker';
 export type AgentStatus = 'IDLE' | 'RUNNING' | 'WAITING' | 'DONE' | 'ERROR';
 export type EdgeKind = 'TASK_DELEGATION' | 'DATA_PASS' | 'REVIEW_REQUEST';

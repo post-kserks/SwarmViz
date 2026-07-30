@@ -5,7 +5,10 @@ import { WSEventEnvelope, ControlAction } from '../types/swarm';
 const BACKOFF_INITIAL_MS = 1000;
 const BACKOFF_MAX_MS = 10000;
 
-export function useSwarmSocket() {
+// basePath is the currently selected project's routing prefix ("" for the
+// root project, "/p/{id}" for an extra one — see ProjectSummary). Passing
+// null means no project is selected yet, so the socket stays closed.
+export function useSwarmSocket(basePath: string | null) {
   const socketRef = useRef<WebSocket | null>(null);
   const reconnectTimeoutRef = useRef<NodeJS.Timeout | null>(null);
   const backoffRef = useRef<number>(BACKOFF_INITIAL_MS);
@@ -30,14 +33,15 @@ export function useSwarmSocket() {
   } = useSwarmStore();
 
   const connect = useCallback(() => {
+    if (basePath === null) return;
     if (socketRef.current?.readyState === WebSocket.OPEN) return;
 
     const lastSeq = useSwarmStore.getState().lastSeq;
     const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
     const host = window.location.host;
-    
+
     const sinceParam = lastSeq > 0 ? `?since=${lastSeq}` : '';
-    const wsUrl = `${protocol}//${host}/ws${sinceParam}`;
+    const wsUrl = `${protocol}//${host}${basePath}/ws${sinceParam}`;
 
     setConnectionStatus(backoffRef.current > BACKOFF_INITIAL_MS ? 'reconnecting' : 'connecting');
 
@@ -81,7 +85,7 @@ export function useSwarmSocket() {
       console.error('WS Error:', err);
       ws.close();
     };
-  }, [setConnectionStatus, setLastSeq, handleWSEvent]);
+  }, [basePath, setConnectionStatus, setLastSeq, handleWSEvent]);
 
   const scheduleReconnect = useCallback(() => {
     if (reconnectTimeoutRef.current) clearTimeout(reconnectTimeoutRef.current);
@@ -108,12 +112,24 @@ export function useSwarmSocket() {
   }, [addToast]);
 
   useEffect(() => {
+    // A project switch remounts this effect with a new basePath — start its
+    // backoff fresh rather than carrying over delay accumulated against the
+    // previous project's connection.
+    backoffRef.current = BACKOFF_INITIAL_MS;
     connect();
     return () => {
       if (reconnectTimeoutRef.current) clearTimeout(reconnectTimeoutRef.current);
-      if (socketRef.current) socketRef.current.close();
+      if (socketRef.current) {
+        // Detach handlers first: closing here is intentional (unmount or
+        // switching projects), so it must not trigger scheduleReconnect,
+        // which would otherwise open a stray socket to the old basePath.
+        socketRef.current.onclose = null;
+        socketRef.current.onerror = null;
+        socketRef.current.close();
+        socketRef.current = null;
+      }
     };
-  }, [connect]);
+  }, [connect, basePath]);
 
   return { sendControl, sendAgentControl: sendControl };
 }

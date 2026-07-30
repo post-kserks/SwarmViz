@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strings"
 	"sync/atomic"
 	"syscall"
 	"time"
@@ -16,6 +17,7 @@ import (
 	"github.com/swarmviz/swarmviz/pkg/core"
 	"github.com/swarmviz/swarmviz/pkg/diff"
 	"github.com/swarmviz/swarmviz/pkg/hub"
+	"github.com/swarmviz/swarmviz/pkg/registry"
 	"github.com/swarmviz/swarmviz/pkg/server"
 	"github.com/swarmviz/swarmviz/pkg/stats"
 	"github.com/swarmviz/swarmviz/pkg/watcher"
@@ -171,11 +173,38 @@ func NewRootCmd() *cobra.Command {
 				}
 			}()
 
+			// 8b. Optional multi-project registry: extra repos discovered under
+			// --projects-root become reachable at /p/{id}/... alongside this
+			// root project, without changing anything about the routes above.
+			var mr *multiRouter
+			var handler http.Handler = serverInst
+			if cfg.ProjectsRoot != "" {
+				var allowlist []string
+				if strings.TrimSpace(cfg.Projects) != "" {
+					for _, name := range strings.Split(cfg.Projects, ",") {
+						if name = strings.TrimSpace(name); name != "" {
+							allowlist = append(allowlist, name)
+						}
+					}
+				}
+
+				projects, err := registry.Discover(cfg.ProjectsRoot, allowlist)
+				if err != nil {
+					diskMonitor.Stop()
+					_ = copier.Cleanup()
+					return err
+				}
+				cmd.Printf("Discovered %d additional project(s) under %s\n", len(projects), cfg.ProjectsRoot)
+
+				mr = newMultiRouter(ctx, serverInst, "default", filepath.Base(cfg.Path), cfg.Path, cfg, projects, cmd.Printf)
+				handler = mr
+			}
+
 			// 9. Start HTTP Server
 			addr := fmt.Sprintf("%s:%d", cfg.Host, cfg.Port)
 			httpServer := &http.Server{
 				Addr:    addr,
-				Handler: serverInst,
+				Handler: handler,
 			}
 
 			go func() {
@@ -208,6 +237,9 @@ func NewRootCmd() *cobra.Command {
 				if err := copier.Cleanup(); err != nil {
 					cmd.Printf("Error cleaning up shadow directory: %v\n", err)
 				}
+				if mr != nil {
+					mr.stopAll()
+				}
 				close(done)
 			}()
 
@@ -233,6 +265,8 @@ func NewRootCmd() *cobra.Command {
 	cmd.Flags().StringVar(&cfg.MaxRepoSizeStr, "max-repo-size", "500MB", "Repo size threshold for fail-fast startup & warning limit")
 	cmd.Flags().DurationVar(&cfg.DiskCheckInterval, "disk-check-interval", 30*time.Second, "Frequency of periodic /tmp copy size re-check")
 	cmd.Flags().StringVar(&cfg.APIToken, "api-token", "", "Require 'Authorization: Bearer <token>' on the ingest API (recommended with --host)")
+	cmd.Flags().StringVar(&cfg.ProjectsRoot, "projects-root", "", "Directory whose git-repo subdirectories become switchable extra projects, reachable at /p/{id}/... (off by default)")
+	cmd.Flags().StringVar(&cfg.Projects, "projects", "", "Comma-separated allowlist of directory names under --projects-root to expose (default: all discovered)")
 
 	return cmd
 }
