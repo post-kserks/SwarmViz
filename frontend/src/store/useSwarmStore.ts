@@ -23,8 +23,10 @@ function updateTreeNode(node: FileTreeNode, targetPath: string, editCount: numbe
   if (isDir && node.children) {
     return {
       ...node,
+      // Descend on a path-segment boundary: plain startsWith would send
+      // "pkgfoo/x.go" into the unrelated "pkg" directory.
       children: node.children.map((child) =>
-        targetPath.startsWith(child.path) || child.path === targetPath
+        child.path === targetPath || targetPath.startsWith(`${child.path}/`)
           ? updateTreeNode(child, targetPath, editCount, state)
           : child
       ),
@@ -207,22 +209,26 @@ export const useSwarmStore = create<SwarmVizStore>((set, get) => {
     setLastSeq: (lastSeq: number) => set({ lastSeq }),
 
     handleInitState: (data: any) => {
-      let agentsMap: Record<string, AgentNode> = {};
+      // The backend serialises agents with snake_case keys (agent_id,
+      // agent_type), both as a list and as an id-keyed map, so normalise
+      // either shape rather than trusting the map values as-is.
+      const normalizeAgent = (a: any): AgentNode => ({
+        id: a.agent_id || a.id,
+        type: a.agent_type || a.type,
+        parentId: a.parent_id || a.parentId || null,
+        label: a.label || a.agent_id || a.id,
+        status: a.status || 'IDLE',
+        logs: a.logs || [],
+        terminatedReason: a.terminated_reason || a.terminatedReason,
+      });
+
+      const agentsMap: Record<string, AgentNode> = {};
       if (data.agents) {
-        if (Array.isArray(data.agents)) {
-          data.agents.forEach((a: any) => {
-            agentsMap[a.id] = {
-              id: a.id,
-              type: a.type,
-              parentId: a.parent_id || a.parentId || null,
-              label: a.label || a.id,
-              status: a.status || 'IDLE',
-              logs: a.logs || [],
-            };
-          });
-        } else {
-          agentsMap = data.agents;
-        }
+        const list: any[] = Array.isArray(data.agents) ? data.agents : Object.values(data.agents);
+        list.forEach((a: any) => {
+          const agent = normalizeAgent(a);
+          if (agent.id) agentsMap[agent.id] = agent;
+        });
       }
 
       let parsedEdges: AgentEdge[] = [];
@@ -262,11 +268,42 @@ export const useSwarmStore = create<SwarmVizStore>((set, get) => {
           ? lttbDownsample(rawLocHistory, MAX_LOC_HISTORY)
           : rawLocHistory;
 
+      // recent_events replays raw WS envelopes; only the diff frames belong in
+      // the edit stream, and they need unwrapping into EditEvent shape.
+      const envelopeToEdit = (env: any): EditEvent | null => {
+        const d = env?.data;
+        if (!d?.file) return null;
+        return {
+          id: `${env.seq}-${d.file}`,
+          seq: env.seq || 0,
+          ts: env.ts,
+          agentId: d.agent_id,
+          file: d.file,
+          status: d.status,
+          attribution: d.attribution,
+          hunk: d.hunk,
+          added: d.added || 0,
+          removed: d.removed || 0,
+          binary: d.binary || false,
+          truncated: d.truncated || false,
+          skipped: d.skipped || false,
+          reason: d.reason,
+        };
+      };
+
+      const replayedEdits: EditEvent[] = (data.recent_events || [])
+        .filter((env: any) => env?.type === 'LIVE_DIFF_STREAM')
+        .map(envelopeToEdit)
+        .filter((e: EditEvent | null): e is EditEvent => e !== null);
+
+      const initialEdits: EditEvent[] =
+        data.recent_edits || data.recentEvents || replayedEdits;
+
       set({
         agents: agentsMap,
         edges: parsedEdges,
         fileTree: data.file_tree || data.fileTree || null,
-        editStream: (data.recent_edits || data.recentEvents || []).slice(-MAX_EDIT_EVENTS),
+        editStream: initialEdits.slice(-MAX_EDIT_EVENTS),
         locHistory: downsampledLoc,
         activeClaims: parsedClaims,
         conflicts: data.conflicts || {},

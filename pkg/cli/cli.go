@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"sync/atomic"
 	"syscall"
 	"time"
@@ -16,6 +17,7 @@ import (
 	"github.com/swarmviz/swarmviz/pkg/diff"
 	"github.com/swarmviz/swarmviz/pkg/hub"
 	"github.com/swarmviz/swarmviz/pkg/server"
+	"github.com/swarmviz/swarmviz/pkg/stats"
 	"github.com/swarmviz/swarmviz/pkg/watcher"
 )
 
@@ -58,12 +60,24 @@ func NewRootCmd() *cobra.Command {
 				cmd.Printf("⚠ Warning: failed to access embedded static assets: %v\n", err)
 			}
 
+			if !frontend.IsBuilt() {
+				cmd.Printf("⚠ Warning: no UI is embedded in this binary. " +
+					"Build it with `npm --prefix frontend ci && npm --prefix frontend run build`, " +
+					"then rebuild; the API and WebSocket work regardless.\n")
+			}
+
+			// Workspace stats feed widget 3 (file tree) and widget 4 (LOC chart).
+			// Seeded from the shadow copy so the tree lists exactly the tracked,
+			// non-ignored files.
+			statsTracker := stats.New(filepath.Base(cfg.Path), copyRes.CopiedFiles)
+
 			serverInst := server.NewServer(
 				eventHub,
 				cfg.BufferSize,
-				nil, // FileTreeProvider
-				nil, // LOCDeltaProvider
+				statsTracker,
+				statsTracker,
 				server.WithStaticFS(staticFS),
+				server.WithAPIToken(cfg.APIToken),
 			)
 
 			// 5. Initialize Disk Usage Monitor & Degraded Flag
@@ -134,6 +148,19 @@ func NewRootCmd() *cobra.Command {
 						}
 						if res != nil {
 							serverInst.BroadcastEvent("LIVE_DIFF_STREAM", res)
+
+							// Keep the file tree and LOC chart in step with the
+							// stream instead of leaving them frozen at startup.
+							editCount, totalAdded, totalRemoved := statsTracker.RecordEdit(res.File, res.Added, res.Removed)
+							serverInst.BroadcastEvent("FILE_TREE_UPDATE", map[string]interface{}{
+								"file":       res.File,
+								"edit_count": editCount,
+								"state":      string(res.Status),
+							})
+							serverInst.BroadcastEvent("LOC_DELTA_UPDATE", map[string]interface{}{
+								"total_added":   totalAdded,
+								"total_removed": totalRemoved,
+							})
 						}
 					case watcherErr, ok := <-fsWatcher.Errors():
 						if !ok {
@@ -205,6 +232,7 @@ func NewRootCmd() *cobra.Command {
 	cmd.Flags().StringVar(&cfg.LogLevel, "log-level", "info", "Log level (debug|info|warn|error)")
 	cmd.Flags().StringVar(&cfg.MaxRepoSizeStr, "max-repo-size", "500MB", "Repo size threshold for fail-fast startup & warning limit")
 	cmd.Flags().DurationVar(&cfg.DiskCheckInterval, "disk-check-interval", 30*time.Second, "Frequency of periodic /tmp copy size re-check")
+	cmd.Flags().StringVar(&cfg.APIToken, "api-token", "", "Require 'Authorization: Bearer <token>' on the ingest API (recommended with --host)")
 
 	return cmd
 }
@@ -213,7 +241,7 @@ func Execute() error {
 	cmd := NewRootCmd()
 	if err := cmd.Execute(); err != nil {
 		if err.Error() == "flag: help requested" {
-			cmd.PrintHelp()
+			_ = cmd.Help()
 			os.Exit(0)
 		}
 		fmt.Fprintln(os.Stderr, err.Error())

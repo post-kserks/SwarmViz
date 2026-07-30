@@ -11,6 +11,10 @@ func TestGetFS(t *testing.T) {
 		t.Fatalf("GetFS() returned error: %v", err)
 	}
 
+	if !IsBuilt() {
+		t.Skip("frontend/dist is empty; run `npm --prefix frontend run build` to embed the UI")
+	}
+
 	index, err := subFS.Open("index.html")
 	if err != nil {
 		t.Fatalf("Failed to open index.html from embedded FS: %v", err)

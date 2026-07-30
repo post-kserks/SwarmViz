@@ -13,4 +13,5 @@ type Config struct {
 	MaxRepoSizeStr    string        `mapstructure:"max-repo-size"`
 	MaxRepoSizeBytes  int64         `mapstructure:"-"`
 	DiskCheckInterval time.Duration `mapstructure:"disk-check-interval"`
+	APIToken          string        `mapstructure:"api-token"`
 }
