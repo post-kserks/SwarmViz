@@ -1,0 +1,56 @@
+{
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 /home/pin/projects/SwarmViz/integrations/claude-code/swarmviz_hook.py session-start"
+          }
+        ]
+      }
+    ],
+    "PreToolUse": [
+      {
+        "matcher": "Edit|Write|NotebookEdit|MultiEdit|Task",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 /home/pin/projects/SwarmViz/integrations/claude-code/swarmviz_hook.py pre-tool"
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "Edit|Write|NotebookEdit|MultiEdit|Task",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 /home/pin/projects/SwarmViz/integrations/claude-code/swarmviz_hook.py post-tool"
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 /home/pin/projects/SwarmViz/integrations/claude-code/swarmviz_hook.py stop"
+          }
+        ]
+      }
+    ],
+    "SessionEnd": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 /home/pin/projects/SwarmViz/integrations/claude-code/swarmviz_hook.py session-end"
+          }
+        ]
+      }
+    ]
+  }
+}
