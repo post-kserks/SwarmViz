@@ -217,3 +217,78 @@ func TestConcurrentClaimsAndReleases(t *testing.T) {
 
 	wg.Wait()
 }
+
+// An agent re-claiming a file it already holds is routine: Claude Code edits
+// the same file again well inside --claim-ttl. Counting raw claims made that
+// look like two claimants, so CONFLICT_DETECTED fired and the edit was
+// attributed to `multi` instead of the agent that actually made it.
+func TestSameAgentReclaimIsNotAConflict(t *testing.T) {
+	h := NewEventHub()
+
+	var conflictDetected int32
+	h.Subscribe(func(ev HubEvent) {
+		if ev.Type == "CONFLICT_DETECTED" {
+			atomic.AddInt32(&conflictDetected, 1)
+		}
+	})
+
+	c1 := h.ClaimFile("agent-1", "src/stub.py")
+	c2 := h.ClaimFile("agent-1", "src/stub.py")
+
+	if got := atomic.LoadInt32(&conflictDetected); got != 0 {
+		t.Errorf("same agent re-claiming its own file must not conflict, got %d events", got)
+	}
+
+	claimants := h.GetActiveClaimsForFile("src/stub.py")
+	if len(claimants) != 1 || claimants[0] != "agent-1" {
+		t.Errorf("expected exactly one claimant agent-1, got %v", claimants)
+	}
+
+	state := h.GetInitState()
+	if len(state.Conflicts["src/stub.py"]) != 0 {
+		t.Errorf("expected no conflict in snapshot, got %v", state.Conflicts["src/stub.py"])
+	}
+
+	// A second, different agent still conflicts — the real case must survive.
+	c3 := h.ClaimFile("agent-2", "src/stub.py")
+	if got := atomic.LoadInt32(&conflictDetected); got != 1 {
+		t.Errorf("expected 1 conflict once a second agent joined, got %d", got)
+	}
+	claimants = h.GetActiveClaimsForFile("src/stub.py")
+	if len(claimants) != 2 {
+		t.Errorf("expected 2 distinct claimants, got %v", claimants)
+	}
+
+	h.ReleaseClaim(c1)
+	h.ReleaseClaim(c2)
+	h.ReleaseClaim(c3)
+}
+
+// Releasing one of an agent's duplicate claims must not report the conflict as
+// resolved while a second agent is still holding the file.
+func TestConflictResolvesOnlyWhenAnAgentFullyLetsGo(t *testing.T) {
+	h := NewEventHub()
+
+	var conflictResolved int32
+	h.Subscribe(func(ev HubEvent) {
+		if ev.Type == "CONFLICT_RESOLVED" {
+			atomic.AddInt32(&conflictResolved, 1)
+		}
+	})
+
+	a1 := h.ClaimFile("agent-1", "shared.go")
+	a2 := h.ClaimFile("agent-1", "shared.go") // duplicate held by the same agent
+	b1 := h.ClaimFile("agent-2", "shared.go")
+
+	h.ReleaseClaim(a1)
+	if got := atomic.LoadInt32(&conflictResolved); got != 0 {
+		t.Errorf("dropping a duplicate claim resolves nothing, got %d events", got)
+	}
+
+	h.ReleaseClaim(a2) // agent-1 has now fully let go
+	if got := atomic.LoadInt32(&conflictResolved); got != 1 {
+		t.Errorf("expected conflict resolved once agent-1 released everything, got %d", got)
+	}
+
+	h.ReleaseClaim(b1)
+}
