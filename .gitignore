@@ -1,0 +1,39 @@
+# Dependencies
+vendor/
+node_modules/
+frontend/node_modules/
+
+# Build artifacts
+frontend/dist/
+swarmviz
+swarmviz-dev
+*.exe
+*.exe?
+*.dll
+*.so
+*.dylib
+
+# System & IDE files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+.vscode/
+.idea/
+
+# Logs & temporary files
+*.log
+*.tmp
+/scratch/
+.agents/
+
+# Test coverage
+*.out
+coverage.txt
+
+#Other
+SwarmViz_TZ_v3.1.md
+ORIGINAL_REQUEST.md

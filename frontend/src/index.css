@@ -1,0 +1,88 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --bg-window: #0a0b0e;
+  --bg-card: #12141c;
+  --border: #1e2230;
+  --text-primary: #e2e8f0;
+  --text-muted: #64748b;
+  --glow-orchestrator: #a855f7;
+  --glow-teamwork: #3b82f6;
+  --glow-challenger: #f43f5e;
+  --glow-worker: #f59e0b;
+  --diff-add-bg: rgba(34, 197, 94, 0.15);
+  --diff-remove-bg: rgba(239, 68, 68, 0.15);
+  --conflict-alert: #eab308;
+}
+
+/* Custom Scrollbar Styles for IDE Look */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+::-webkit-scrollbar-track {
+  background: #0a0b0e;
+}
+
+::-webkit-scrollbar-thumb {
+  background: #1e2230;
+  border-radius: 3px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: #334155;
+}
+
+/* Custom Scrollbar utility class */
+.custom-scrollbar::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+.custom-scrollbar::-webkit-scrollbar-track {
+  background: #0a0b0e;
+}
+
+.custom-scrollbar::-webkit-scrollbar-thumb {
+  background: #1e2230;
+  border-radius: 3px;
+}
+
+.custom-scrollbar::-webkit-scrollbar-thumb:hover {
+  background: #334155;
+}
+
+/* ReactFlow Dark Theme Overrides */
+.react-flow__background {
+  background-color: #0a0b0e !important;
+}
+
+.react-flow__controls {
+  background-color: #12141c !important;
+  border: 1px solid #1e2230 !important;
+  border-radius: 6px !important;
+  overflow: hidden;
+}
+
+.react-flow__controls-button {
+  background-color: #12141c !important;
+  border-bottom: 1px solid #1e2230 !important;
+  color: #e2e8f0 !important;
+  fill: #e2e8f0 !important;
+}
+
+.react-flow__controls-button:hover {
+  background-color: #1e2230 !important;
+}
+
+.react-flow__edge-path {
+  stroke-width: 2;
+}
+
+.animated-edge {
+  stroke-dasharray: 5;
+  animation: dashMarch 1s linear infinite;
+}
