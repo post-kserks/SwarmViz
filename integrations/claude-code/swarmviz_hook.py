@@ -124,10 +124,8 @@ def worker_id_for(session_id, tool_input):
     return "sub-" + hashlib.sha1(seed.encode()).hexdigest()[:8]
 
 
-def repo_root(payload):
-    root = os.environ.get("SWARMVIZ_REPO")
-    if root:
-        return os.path.abspath(root)
+def session_root(payload):
+    """Корень репозитория, в котором работает сама сессия Claude Code."""
     cwd = payload.get("cwd") or os.getcwd()
     try:
         out = subprocess.run(
@@ -139,6 +137,28 @@ def repo_root(payload):
     except Exception as exc:
         debug(f"git rev-parse не отработал: {exc}")
     return cwd
+
+
+def repo_root(payload):
+    """Репозиторий, за которым следит SwarmViz."""
+    return os.path.abspath(os.environ.get("SWARMVIZ_REPO") or session_root(payload))
+
+
+def out_of_scope(payload):
+    """True, если сессия работает не в том репозитории, что смотрит SwarmViz.
+
+    Хуки обычно ставят глобально, в ~/.claude/settings.json, а инстанс
+    SwarmViz следит ровно за одним репозиторием. Без этой проверки любая
+    сессия на машине заводила бы агента, к которому визуализатор никогда не
+    сможет привязать ни одной правки.
+    """
+    configured = os.environ.get("SWARMVIZ_REPO")
+    if not configured:
+        return False
+    mismatch = os.path.abspath(configured) != os.path.abspath(session_root(payload))
+    if mismatch:
+        debug(f"сессия вне {configured}, ничего не отправляю")
+    return mismatch
 
 
 def relative_path(payload, file_path):
@@ -295,6 +315,9 @@ def main():
     except Exception as exc:
         debug(f"не разобрал stdin: {exc}")
         payload = {}
+
+    if out_of_scope(payload):
+        return 0
 
     session_id = payload.get("session_id", "")
     state = load_state(session_id)

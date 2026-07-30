@@ -5,7 +5,8 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python3 /home/pin/projects/SwarmViz/integrations/claude-code/swarmviz_hook.py session-start"
+            "command": "SWARMVIZ_REPO=/home/pin/projects/SwarmViz python3 /home/pin/projects/SwarmViz/integrations/claude-code/swarmviz_hook.py session-start",
+            "timeout": 5
           }
         ]
       }
@@ -16,7 +17,8 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python3 /home/pin/projects/SwarmViz/integrations/claude-code/swarmviz_hook.py pre-tool"
+            "command": "SWARMVIZ_REPO=/home/pin/projects/SwarmViz python3 /home/pin/projects/SwarmViz/integrations/claude-code/swarmviz_hook.py pre-tool",
+            "timeout": 5
           }
         ]
       }
@@ -27,7 +29,8 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python3 /home/pin/projects/SwarmViz/integrations/claude-code/swarmviz_hook.py post-tool"
+            "command": "SWARMVIZ_REPO=/home/pin/projects/SwarmViz python3 /home/pin/projects/SwarmViz/integrations/claude-code/swarmviz_hook.py post-tool",
+            "timeout": 5
           }
         ]
       }
@@ -37,7 +40,8 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python3 /home/pin/projects/SwarmViz/integrations/claude-code/swarmviz_hook.py stop"
+            "command": "SWARMVIZ_REPO=/home/pin/projects/SwarmViz python3 /home/pin/projects/SwarmViz/integrations/claude-code/swarmviz_hook.py stop",
+            "timeout": 5
           }
         ]
       }
@@ -47,7 +51,8 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python3 /home/pin/projects/SwarmViz/integrations/claude-code/swarmviz_hook.py session-end"
+            "command": "SWARMVIZ_REPO=/home/pin/projects/SwarmViz python3 /home/pin/projects/SwarmViz/integrations/claude-code/swarmviz_hook.py session-end",
+            "timeout": 5
           }
         ]
       }
