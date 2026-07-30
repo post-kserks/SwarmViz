@@ -214,3 +214,96 @@ func TestEngine_PerFileMutex_Race(t *testing.T) {
 
 	wg.Wait()
 }
+
+// Claude Code (and vim, and anything else that saves atomically) writes to a
+// scratch file next to the target and renames it into place. The watcher sees
+// that scratch path as an ordinary file, and by the time the debounced diff
+// runs it is already gone -- which used to be reported as a deletion and left
+// a phantom `<name>.tmp.<pid>.<hash>` entry in the file tree, one per edit,
+// that nothing could ever clear.
+func TestEngine_TransientScratchFileIsDropped(t *testing.T) {
+	repoDir := t.TempDir()
+	shadowDir := t.TempDir()
+
+	engine := NewEngine(repoDir, shadowDir, hub.NewEventHub(), func() bool { return false })
+	defer engine.Close()
+
+	// Neither the working tree nor the shadow has ever seen this path: the
+	// scratch file was renamed away before the diff ran.
+	scratch := "stub_check.py.tmp.2654173.0e9aa70a8aad"
+
+	for _, op := range []watcher.EventOp{watcher.OpWrite, watcher.OpRemove, watcher.OpRename, watcher.OpCreate} {
+		res, err := engine.ProcessEvent(watcher.FSEvent{RelPath: scratch, Op: op})
+		if err != nil {
+			t.Fatalf("op %v: unexpected error: %v", op, err)
+		}
+		if res != nil {
+			t.Errorf("op %v: scratch file must produce no event, got %+v", op, res)
+		}
+	}
+}
+
+// The flip side: a file the shadow baseline knows about really was deleted,
+// and must still be reported. Dropping these would have been the easy way to
+// silence the phantoms and would have broken deletion reporting outright.
+func TestEngine_DeletingATrackedFileIsStillReported(t *testing.T) {
+	repoDir := t.TempDir()
+	shadowDir := t.TempDir()
+
+	engine := NewEngine(repoDir, shadowDir, hub.NewEventHub(), func() bool { return false })
+	defer engine.Close()
+
+	relPath := "src/gone.go"
+	shadowPath := filepath.Join(shadowDir, relPath)
+	if err := os.MkdirAll(filepath.Dir(shadowPath), 0755); err != nil {
+		t.Fatalf("mkdir shadow: %v", err)
+	}
+	if err := os.WriteFile(shadowPath, []byte("package main\n"), 0644); err != nil {
+		t.Fatalf("seed shadow: %v", err)
+	}
+
+	// The file is absent from the working tree but present in the baseline.
+	res, err := engine.ProcessEvent(watcher.FSEvent{RelPath: relPath, Op: watcher.OpRemove})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if res == nil {
+		t.Fatalf("deleting a tracked file must still emit an event")
+	}
+	if res.Status != StatusDeleted {
+		t.Errorf("expected status %q, got %q", StatusDeleted, res.Status)
+	}
+	if _, err := os.Stat(shadowPath); !os.IsNotExist(err) {
+		t.Errorf("shadow copy should be dropped once the file is gone")
+	}
+}
+
+// A brand-new file must not be mistaken for a scratch file: it is missing from
+// the shadow too, and the only thing separating the two cases is whether it
+// still exists when the diff runs.
+func TestEngine_NewFileIsDiffedNotDropped(t *testing.T) {
+	repoDir := t.TempDir()
+	shadowDir := t.TempDir()
+
+	engine := NewEngine(repoDir, shadowDir, hub.NewEventHub(), func() bool { return false })
+	defer engine.Close()
+
+	relPath := "notes.md"
+	if err := os.WriteFile(filepath.Join(repoDir, relPath), []byte("line one\n"), 0644); err != nil {
+		t.Fatalf("write working file: %v", err)
+	}
+
+	res, err := engine.ProcessEvent(watcher.FSEvent{RelPath: relPath, Op: watcher.OpCreate})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if res == nil {
+		t.Fatalf("a new file that exists must be diffed, not dropped")
+	}
+	if res.Added != 1 {
+		t.Errorf("expected 1 added line, got %d", res.Added)
+	}
+	if _, err := os.Stat(filepath.Join(shadowDir, relPath)); err != nil {
+		t.Errorf("new file should have entered the shadow baseline: %v", err)
+	}
+}
