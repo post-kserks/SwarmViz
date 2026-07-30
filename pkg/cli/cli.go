@@ -213,7 +213,7 @@ func Execute() error {
 	cmd := NewRootCmd()
 	if err := cmd.Execute(); err != nil {
 		if err.Error() == "flag: help requested" {
-			cmd.PrintHelp()
+			_ = cmd.Help()
 			os.Exit(0)
 		}
 		fmt.Fprintln(os.Stderr, err.Error())
