@@ -25,11 +25,27 @@ type LOCDeltaProvider interface {
 	GetLOCDelta() (added int64, removed int64)
 }
 
+// LOCHistoryProvider is optional: when the LOCDeltaProvider also implements it,
+// INIT_STATE carries the chart series so a reconnecting client redraws the
+// whole curve instead of restarting from a single point.
+type LOCHistoryProvider interface {
+	GetLOCHistory() interface{}
+}
+
 type ServerOption func(*Server)
 
 func WithStaticFS(staticFS fs.FS) ServerOption {
 	return func(s *Server) {
 		s.staticFS = staticFS
+	}
+}
+
+// WithAPIToken requires callers of the mutating /api/ endpoints to present
+// "Authorization: Bearer <token>". Empty leaves the ingest API open, which is
+// the default because the server listens on loopback.
+func WithAPIToken(token string) ServerOption {
+	return func(s *Server) {
+		s.apiToken = token
 	}
 }
 
@@ -42,6 +58,7 @@ type Server struct {
 	locDeltaProvider LOCDeltaProvider
 	unsubscribeHub   func()
 	staticFS         fs.FS
+	apiToken         string
 }
 
 func NewServer(eventHub hub.AgentEventHub, bufferSize int, ftProvider FileTreeProvider, locProvider LOCDeltaProvider, opts ...ServerOption) *Server {
@@ -149,7 +166,7 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if strings.HasPrefix(r.URL.Path, "/api/") {
-		http.NotFound(w, r)
+		s.handleAPI(w, r)
 		return
 	}
 
@@ -325,8 +342,12 @@ func (s *Server) buildInitState() map[string]interface{} {
 	}
 
 	var added, removed int64
+	var locHistory interface{}
 	if s.locDeltaProvider != nil {
 		added, removed = s.locDeltaProvider.GetLOCDelta()
+		if hp, ok := s.locDeltaProvider.(LOCHistoryProvider); ok {
+			locHistory = hp.GetLOCHistory()
+		}
 	}
 
 	recentEvents := s.ringBuffer.GetRecentEvents(50)
@@ -341,6 +362,8 @@ func (s *Server) buildInitState() map[string]interface{} {
 			"total_added":   added,
 			"total_removed": removed,
 		},
+		"loc_history":   locHistory,
 		"recent_events": recentEvents,
+		"last_seq":      s.ringBuffer.GetNewestSeq(),
 	}
 }

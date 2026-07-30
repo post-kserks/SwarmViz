@@ -65,12 +65,19 @@ SwarmViz — это высокопроизводительный локальн�
 | `--log-level` | | `info` | Уровень логирования (`debug \| info \| warn \| error`) |
 | `--max-repo-size` | | `500MB` | Порог отсечения большого репозитория при старте |
 | `--disk-check-interval` | | `30s` | Периодичность проверки размера `/tmp` в сессии |
+| `--api-token` | | *(пусто)* | Требовать `Authorization: Bearer <токен>` для ingest API |
 
 ---
 
 ## 🛠 Сборка из исходного кода
 
 ### 1. Сборка фронтенда
+
+Каталог `frontend/dist/` не хранится в git (в нём лежит только заглушка
+`.gitkeep`, чтобы директива `//go:embed` находила путь). Поэтому **фронтенд
+нужно собрать до сборки Go-бинарника** — иначе UI внутри бинарника будет пустым
+и при старте вы увидите предупреждение. API и WebSocket при этом работают.
+
 ```bash
 cd frontend
 npm install
@@ -118,9 +125,74 @@ go test -v -race ./...
 
 ---
 
-## 🔌 Интеграция с оркестраторами (AgentEventHub)
+## 🔌 Интеграция с оркестраторами
 
-Внутри процесса Go оркестраторы подключаются через Go-интерфейс `AgentEventHub`:
+### Вариант A: HTTP Ingest API (любой язык)
+
+Запущенный бинарник принимает события агентов по HTTP, поэтому оркестратор на
+Python, Node, Bash или чём угодно ещё может наполнять граф без единой строки Go.
+
+| Метод | Эндпоинт | Тело | Ответ |
+|---|---|---|---|
+| `GET` | `/api/health` | — | `{"status":"ok"}` (без токена) |
+| `GET` | `/api/state` | — | Полный снимок: агенты, рёбра, claim'ы, дерево файлов, LOC |
+| `POST` | `/api/agents` | `{"agent_id","agent_type","parent_id","label"}` | `201 {"agent_id"}` |
+| `POST` | `/api/agents/{id}/status` | `{"status"}` | `202` |
+| `POST` | `/api/agents/{id}/terminate` | `{"reason"}` | `202` |
+| `POST` | `/api/agents/{id}/log` | `{"level","message"}` | `202` |
+| `POST` | `/api/edges` | `{"from_id","to_id","kind"}` | `201` |
+| `POST` | `/api/claims` | `{"agent_id","file"}` | `201 {"claim_id"}` |
+| `DELETE` | `/api/claims/{claim_id}` | — | `200` |
+| `POST` | `/api/events` | `[{"type","data"}, ...]` | `202 {"applied"}` |
+
+Допустимые значения: `agent_type` — `orchestrator \| teamwork \| challenger \| worker`;
+`status` — `IDLE \| RUNNING \| WAITING \| DONE \| ERROR`;
+`kind` — `TASK_DELEGATION \| DATA_PASS \| REVIEW_REQUEST`;
+`level` — `debug \| info \| warn \| error`.
+
+Неизвестные поля и значения отклоняются с `400`. Пакетный `/api/events`
+применяется по принципу «всё или ничего»: одна ошибка отменяет весь пакет,
+чтобы интерфейс не показывал наполовину применённую пачку событий.
+
+Полный цикл «объявил claim → отредактировал файл → снял claim» — именно то, что
+превращает правку из `external` в `claimed` и привязывает её к агенту:
+
+```bash
+# 1. Регистрируем агентов и связь между ними
+curl -X POST localhost:8942/api/agents \
+  -d '{"agent_id":"root","agent_type":"orchestrator","label":"Оркестратор"}'
+curl -X POST localhost:8942/api/agents \
+  -d '{"agent_id":"w1","agent_type":"worker","parent_id":"root","label":"Воркер 1"}'
+curl -X POST localhost:8942/api/edges \
+  -d '{"from_id":"root","to_id":"w1","kind":"TASK_DELEGATION"}'
+
+# 2. Объявляем claim ПЕРЕД правкой файла
+CLAIM=$(curl -s -X POST localhost:8942/api/claims \
+  -d '{"agent_id":"w1","file":"main.go"}' | jq -r .claim_id)
+
+# 3. Правим файл — diff будет атрибутирован агенту w1
+echo '// правка' >> main.go
+
+# 4. Снимаем claim (иначе он снимется сам по --claim-ttl)
+curl -X DELETE localhost:8942/api/claims/$CLAIM
+```
+
+Готовый пример, поднимающий целый рой, — `examples/demo_swarm.py`:
+
+```bash
+./swarmviz --path /tmp/demo-repo --claim-ttl 10s &
+python3 examples/demo_swarm.py --repo /tmp/demo-repo
+```
+
+**Безопасность.** По умолчанию сервер слушает `127.0.0.1`, и ingest API открыт.
+Если вы меняете `--host`, закройте API общим секретом:
+
+```bash
+./swarmviz --host 0.0.0.0 --api-token "$(openssl rand -hex 16)"
+# далее: curl -H "Authorization: Bearer <токен>" ...
+```
+
+### Вариант B: Go-интерфейс `AgentEventHub` (внутри процесса)
 
 ```go
 type AgentEventHub interface {
