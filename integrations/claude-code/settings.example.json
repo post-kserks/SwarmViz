@@ -5,8 +5,8 @@
         "hooks": [
           {
             "type": "command",
-            "command": "SWARMVIZ_REPO=/home/pin/projects/SwarmViz python3 /home/pin/projects/SwarmViz/integrations/claude-code/swarmviz_hook.py session-start",
-            "timeout": 5
+            "command": "python3 /path/to/SwarmViz/integrations/claude-code/swarmviz_hook.py session-start",
+            "timeout": 10
           }
         ]
       }
@@ -17,8 +17,8 @@
         "hooks": [
           {
             "type": "command",
-            "command": "SWARMVIZ_REPO=/home/pin/projects/SwarmViz python3 /home/pin/projects/SwarmViz/integrations/claude-code/swarmviz_hook.py pre-tool",
-            "timeout": 5
+            "command": "python3 /path/to/SwarmViz/integrations/claude-code/swarmviz_hook.py pre-tool",
+            "timeout": 10
           }
         ]
       }
@@ -29,8 +29,8 @@
         "hooks": [
           {
             "type": "command",
-            "command": "SWARMVIZ_REPO=/home/pin/projects/SwarmViz python3 /home/pin/projects/SwarmViz/integrations/claude-code/swarmviz_hook.py post-tool",
-            "timeout": 5
+            "command": "python3 /path/to/SwarmViz/integrations/claude-code/swarmviz_hook.py post-tool",
+            "timeout": 10
           }
         ]
       }
@@ -40,8 +40,8 @@
         "hooks": [
           {
             "type": "command",
-            "command": "SWARMVIZ_REPO=/home/pin/projects/SwarmViz python3 /home/pin/projects/SwarmViz/integrations/claude-code/swarmviz_hook.py stop",
-            "timeout": 5
+            "command": "python3 /path/to/SwarmViz/integrations/claude-code/swarmviz_hook.py stop",
+            "timeout": 10
           }
         ]
       }
@@ -51,8 +51,8 @@
         "hooks": [
           {
             "type": "command",
-            "command": "SWARMVIZ_REPO=/home/pin/projects/SwarmViz python3 /home/pin/projects/SwarmViz/integrations/claude-code/swarmviz_hook.py session-end",
-            "timeout": 5
+            "command": "python3 /path/to/SwarmViz/integrations/claude-code/swarmviz_hook.py session-end",
+            "timeout": 10
           }
         ]
       }

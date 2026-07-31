@@ -13,11 +13,19 @@ claim-then-diff, на котором держится вся атрибуция.
 Полезная нагрузка хука читается из stdin как JSON. Скрипт никогда не должен
 ломать работу Claude Code: любая ошибка гасится, код возврата всегда 0.
 
+Хуки ставятся глобально, в ~/.claude/settings.json, и действуют на все проекты
+сразу. Поэтому скрипт сам выясняет, в каком репозитории идёт сессия, спрашивает
+у сервера список проектов (`GET /api/projects`) и шлёт события на префикс того
+проекта, который этому репозиторию соответствует: корневой проект живёт на
+`/api/...`, остальные — на `/p/{id}/api/...`. Если подходящего проекта нет, хук
+молча проходит мимо.
+
 Настройка через окружение:
     SWARMVIZ_URL    базовый URL (по умолчанию http://127.0.0.1:8942)
     SWARMVIZ_TOKEN  bearer-токен, если сервер запущен с --api-token
-    SWARMVIZ_REPO   корень наблюдаемого репозитория (по умолчанию — git-корень
-                    от cwd сессии)
+    SWARMVIZ_REPO   жёстко закрепить сессию за одним репозиторием: события
+                    уходят, только если сессия запущена именно в нём. Обычно
+                    не нужно — проект определяется автоматически.
     SWARMVIZ_DEBUG  1 — писать диагностику в stderr
 """
 
@@ -31,6 +39,10 @@ import urllib.error
 import urllib.request
 
 TIMEOUT = 1.5
+# Первое обращение к проекту поднимает его рантайм (shadow-копия репозитория),
+# а это заметно дольше обычного запроса. Резолв проекта и создание агента ждут
+# дольше — иначе на холодном старте сессия не зарегистрируется вообще.
+COLD_START_TIMEOUT = 8.0
 EDIT_TOOLS = {"Edit", "Write", "NotebookEdit", "MultiEdit"}
 DELEGATION_TOOL = "Task"
 
@@ -44,35 +56,38 @@ def debug(msg):
         print(f"[swarmviz-hook] {msg}", file=sys.stderr)
 
 
-def call(method, path, payload=None):
+def call(method, path, payload=None, base="", timeout=TIMEOUT):
     """Дёргает ingest API. Возвращает разобранный ответ или None при любой беде.
+
+    `base` — префикс проекта из /api/projects: пустая строка для корневого,
+    `/p/{id}` для остальных.
 
     SwarmViz — вспомогательная визуализация, а не критичная зависимость:
     если сервер не запущен, хук обязан молча пройти мимо.
     """
     data = json.dumps(payload).encode() if payload is not None else None
-    req = urllib.request.Request(BASE_URL + path, data=data, method=method)
+    req = urllib.request.Request(BASE_URL + base + path, data=data, method=method)
     req.add_header("Content-Type", "application/json")
     if TOKEN:
         req.add_header("Authorization", "Bearer " + TOKEN)
     try:
-        with urllib.request.urlopen(req, timeout=TIMEOUT) as resp:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
             body = resp.read()
             return json.loads(body) if body else {}
     except urllib.error.HTTPError as exc:
-        debug(f"{method} {path} -> HTTP {exc.code}: {exc.read()[:200]}")
+        debug(f"{method} {base}{path} -> HTTP {exc.code}: {exc.read()[:200]}")
     except Exception as exc:  # соединение, таймаут, кривой JSON — всё равно
-        debug(f"{method} {path} -> {exc}")
+        debug(f"{method} {base}{path} -> {exc}")
     return None
 
 
 # --------------------------------------------------------------------------
 # Состояние сессии
 #
-# Нужно ровно для одного: помнить активный claim по каждому файлу, чтобы снять
-# предыдущий перед новым. Хаб схлопывает повторные claim одного агента по
-# agent_id, так что для атрибуции это не критично, но иначе claim'ы копятся до
-# истечения TTL и засоряют список активных.
+# Нужно для двух вещей: помнить активный claim по каждому файлу, чтобы снять
+# предыдущий перед новым (иначе claim'ы копятся до истечения TTL и засоряют
+# список активных), и кэшировать разрешённый проект, чтобы не дёргать
+# /api/projects на каждый вызов хука.
 # --------------------------------------------------------------------------
 
 def state_path(session_id):
@@ -85,7 +100,7 @@ def load_state(session_id):
         with open(state_path(session_id)) as fh:
             return json.load(fh)
     except Exception:
-        return {"agent_created": False, "claims": {}, "workers": {}}
+        return {"agent_created": False, "claims": {}, "workers": {}, "project": None}
 
 
 def save_state(session_id, state):
@@ -124,44 +139,141 @@ def worker_id_for(session_id, tool_input):
     return "sub-" + hashlib.sha1(seed.encode()).hexdigest()[:8]
 
 
-def session_root(payload):
-    """Корень репозитория, в котором работает сама сессия Claude Code."""
-    cwd = payload.get("cwd") or os.getcwd()
+def git_output(cwd, *args):
     try:
         out = subprocess.run(
-            ["git", "rev-parse", "--show-toplevel"],
+            ["git"] + list(args),
             cwd=cwd, capture_output=True, text=True, timeout=TIMEOUT,
         )
         if out.returncode == 0 and out.stdout.strip():
             return out.stdout.strip()
     except Exception as exc:
-        debug(f"git rev-parse не отработал: {exc}")
-    return cwd
+        debug(f"git {' '.join(args)} не отработал: {exc}")
+    return None
 
 
-def repo_root(payload):
-    """Репозиторий, за которым следит SwarmViz."""
-    return os.path.abspath(os.environ.get("SWARMVIZ_REPO") or session_root(payload))
+def session_root(payload):
+    """Корень репозитория, в котором работает сама сессия Claude Code."""
+    cwd = payload.get("cwd") or os.getcwd()
+    return git_output(cwd, "rev-parse", "--show-toplevel") or cwd
 
 
-def out_of_scope(payload):
-    """True, если сессия работает не в том репозитории, что смотрит SwarmViz.
+def main_repo_root(payload):
+    """Корень основного репозитория, если сессия идёт в git-worktree.
 
-    Хуки обычно ставят глобально, в ~/.claude/settings.json, а инстанс
-    SwarmViz следит ровно за одним репозиторием. Без этой проверки любая
-    сессия на машине заводила бы агента, к которому визуализатор никогда не
-    сможет привязать ни одной правки.
+    Claude Code часто работает в worktree (.claude/worktrees/...), а SwarmViz
+    следит за основным checkout'ом. `--git-common-dir` указывает на .git
+    основного репозитория, его родитель и есть искомый корень.
     """
-    configured = os.environ.get("SWARMVIZ_REPO")
-    if not configured:
-        return False
-    mismatch = os.path.abspath(configured) != os.path.abspath(session_root(payload))
-    if mismatch:
-        debug(f"сессия вне {configured}, ничего не отправляю")
-    return mismatch
+    cwd = payload.get("cwd") or os.getcwd()
+    common = git_output(cwd, "rev-parse", "--path-format=absolute", "--git-common-dir")
+    if not common:
+        return None
+    return os.path.dirname(os.path.abspath(common)) or None
 
 
-def relative_path(payload, file_path):
+def is_within(child, parent):
+    """True, если child — сам parent либо лежит внутри него."""
+    child = os.path.abspath(child)
+    parent = os.path.abspath(parent)
+    if child == parent:
+        return True
+    return child.startswith(parent.rstrip(os.sep) + os.sep)
+
+
+def fetch_projects():
+    """Список проектов сервера, либо None если multi-project режим выключен.
+
+    В одиночном режиме эндпоинта нет — сервер отвечает 404, и call() вернёт
+    None. Это не ошибка, а сигнал работать по-старому: единственный проект на
+    корневых путях.
+    """
+    projects = call("GET", "/api/projects", timeout=COLD_START_TIMEOUT)
+    if isinstance(projects, list) and projects:
+        return projects
+    return None
+
+
+def match_project(projects, candidates):
+    """Проект, которому принадлежит репозиторий сессии.
+
+    Порядок: точное совпадение пути (кандидаты идут по убыванию
+    предпочтительности — сначала корень самой сессии, потом основной
+    репозиторий worktree), затем самый глубокий проект, внутри которого сессия
+    лежит. Глубина важна: если заданы и /home/pin/projects/foo, и
+    /home/pin/projects, сессия из foo должна достаться foo, а не родителю.
+    """
+    for candidate in candidates:
+        for p in projects:
+            if os.path.abspath(p.get("path", "")) == os.path.abspath(candidate):
+                return p
+
+    for candidate in candidates:
+        best = None
+        for p in projects:
+            path = p.get("path", "")
+            if not path or not is_within(candidate, path):
+                continue
+            if best is None or len(os.path.abspath(path)) > len(os.path.abspath(best["path"])):
+                best = p
+        if best is not None:
+            return best
+    return None
+
+
+def resolve_target(payload, state):
+    """Куда слать события: {base, path, id, name}, либо None если репозиторий чужой.
+
+    Успешный результат кэшируется в состоянии сессии. Неуспешный — нет: если
+    сервер лежал в момент SessionStart, следующий хук попробует снова.
+    """
+    cached = state.get("project")
+    if cached:
+        return cached
+
+    root = session_root(payload)
+    pinned = os.environ.get("SWARMVIZ_REPO")
+    if pinned:
+        # Явное закрепление: сессия обязана идти именно в этом репозитории.
+        pinned_abs = os.path.abspath(pinned)
+        if not is_within(root, pinned_abs):
+            debug(f"сессия вне {pinned_abs}, ничего не отправляю")
+            return None
+        candidates = [pinned_abs]
+    else:
+        candidates = [root]
+        worktree_main = main_repo_root(payload)
+        if worktree_main and os.path.abspath(worktree_main) != os.path.abspath(root):
+            candidates.append(worktree_main)
+
+    projects = fetch_projects()
+    if projects is None:
+        # Одиночный режим: единственный проект на корневых путях. Проверить,
+        # тот ли это репозиторий, нечем, поэтому доверяем кандидату — так же
+        # вело себя предыдущее поколение хука.
+        target = {"base": "", "path": os.path.abspath(candidates[0]),
+                  "id": "default",
+                  "name": os.path.basename(candidates[0]) or "claude"}
+        state["project"] = target
+        return target
+
+    matched = match_project(projects, candidates)
+    if matched is None:
+        debug(f"{root} не соответствует ни одному проекту SwarmViz, ничего не отправляю")
+        return None
+
+    target = {
+        "base": matched.get("basePath", "") or "",
+        "path": os.path.abspath(matched.get("path") or candidates[0]),
+        "id": matched.get("id", "default"),
+        "name": matched.get("name") or os.path.basename(candidates[0]) or "claude",
+    }
+    debug(f"{root} -> проект {target['id']} на {target['base'] or '/'}")
+    state["project"] = target
+    return target
+
+
+def relative_path(target, file_path):
     """Путь относительно наблюдаемого репозитория, либо None если файл вне его.
 
     Хаб сравнивает claim с путём из diff, а тот всегда относительный от корня
@@ -169,7 +281,7 @@ def relative_path(payload, file_path):
     """
     if not file_path:
         return None
-    root = repo_root(payload)
+    root = target["path"]
     try:
         rel = os.path.relpath(os.path.abspath(file_path), root)
     except ValueError:
@@ -184,40 +296,41 @@ def relative_path(payload, file_path):
 # Действия
 # --------------------------------------------------------------------------
 
-def ensure_agent(session_id, payload, state):
+def ensure_agent(session_id, target, state):
     """Создаёт агента сессии один раз за сессию."""
     if state.get("agent_created"):
         return
-    label = os.path.basename(repo_root(payload)) or "claude"
     ok = call("POST", "/api/agents", {
         "agent_id": agent_id_for(session_id),
         "agent_type": "orchestrator",
         "parent_id": "",
-        "label": f"Claude · {label}",
-    })
+        "label": f"Claude · {target['name']}",
+    }, base=target["base"], timeout=COLD_START_TIMEOUT)
     if ok is not None:
         state["agent_created"] = True
 
 
-def release_previous_claim(state, rel):
+def release_previous_claim(target, state, rel):
     claim_id = state["claims"].pop(rel, None)
     if claim_id:
-        call("DELETE", f"/api/claims/{claim_id}")
+        call("DELETE", f"/api/claims/{claim_id}", base=target["base"])
 
 
-def cmd_session_start(payload, state):
+def cmd_session_start(payload, target, state):
     session_id = payload.get("session_id", "")
-    ensure_agent(session_id, payload, state)
-    call("POST", f"/api/agents/{agent_id_for(session_id)}/status", {"status": "RUNNING"})
+    ensure_agent(session_id, target, state)
+    call("POST", f"/api/agents/{agent_id_for(session_id)}/status",
+         {"status": "RUNNING"}, base=target["base"])
 
 
-def cmd_pre_tool(payload, state):
+def cmd_pre_tool(payload, target, state):
     session_id = payload.get("session_id", "")
     tool = payload.get("tool_name", "")
     tool_input = payload.get("tool_input") or {}
     agent = agent_id_for(session_id)
+    base = target["base"]
 
-    ensure_agent(session_id, payload, state)
+    ensure_agent(session_id, target, state)
 
     if tool == DELEGATION_TOOL:
         worker = worker_id_for(session_id, tool_input)
@@ -226,46 +339,47 @@ def cmd_pre_tool(payload, state):
         call("POST", "/api/agents", {
             "agent_id": worker, "agent_type": "worker",
             "parent_id": agent, "label": label[:60],
-        })
+        }, base=base)
         call("POST", "/api/edges", {
             "from_id": agent, "to_id": worker, "kind": "TASK_DELEGATION",
-        })
-        call("POST", f"/api/agents/{worker}/status", {"status": "RUNNING"})
+        }, base=base)
+        call("POST", f"/api/agents/{worker}/status", {"status": "RUNNING"}, base=base)
         state["workers"][worker] = label[:60]
         return
 
     if tool not in EDIT_TOOLS:
         return
 
-    rel = relative_path(payload, tool_input.get("file_path"))
+    rel = relative_path(target, tool_input.get("file_path"))
     if not rel:
         return
 
     # Снять свой предыдущий claim на этот файл, чтобы они не копились до TTL.
-    release_previous_claim(state, rel)
+    release_previous_claim(target, state, rel)
 
-    resp = call("POST", "/api/claims", {"agent_id": agent, "file": rel})
+    resp = call("POST", "/api/claims", {"agent_id": agent, "file": rel}, base=base)
     if resp and resp.get("claim_id"):
         state["claims"][rel] = resp["claim_id"]
-    call("POST", f"/api/agents/{agent}/status", {"status": "RUNNING"})
+    call("POST", f"/api/agents/{agent}/status", {"status": "RUNNING"}, base=base)
 
 
-def cmd_post_tool(payload, state):
+def cmd_post_tool(payload, target, state):
     session_id = payload.get("session_id", "")
     tool = payload.get("tool_name", "")
     tool_input = payload.get("tool_input") or {}
     agent = agent_id_for(session_id)
+    base = target["base"]
 
     if tool == DELEGATION_TOOL:
         worker = worker_id_for(session_id, tool_input)
-        call("POST", f"/api/agents/{worker}/terminate", {"reason": "completed"})
+        call("POST", f"/api/agents/{worker}/terminate", {"reason": "completed"}, base=base)
         state["workers"].pop(worker, None)
         return
 
     if tool not in EDIT_TOOLS:
         return
 
-    rel = relative_path(payload, tool_input.get("file_path"))
+    rel = relative_path(target, tool_input.get("file_path"))
     if not rel:
         return
 
@@ -275,22 +389,24 @@ def cmd_post_tool(payload, state):
     # сам по --claim-ttl либо будет снят перед следующей правкой этого файла.
     call("POST", f"/api/agents/{agent}/log", {
         "level": "info", "message": f"{tool}: {rel}",
-    })
+    }, base=base)
 
 
-def cmd_stop(payload, state):
+def cmd_stop(payload, target, state):
     session_id = payload.get("session_id", "")
-    call("POST", f"/api/agents/{agent_id_for(session_id)}/status", {"status": "WAITING"})
+    call("POST", f"/api/agents/{agent_id_for(session_id)}/status",
+         {"status": "WAITING"}, base=target["base"])
 
 
-def cmd_session_end(payload, state):
+def cmd_session_end(payload, target, state):
     session_id = payload.get("session_id", "")
     agent = agent_id_for(session_id)
+    base = target["base"]
     for claim_id in list(state.get("claims", {}).values()):
-        call("DELETE", f"/api/claims/{claim_id}")
+        call("DELETE", f"/api/claims/{claim_id}", base=base)
     for worker in list(state.get("workers", {})):
-        call("POST", f"/api/agents/{worker}/terminate", {"reason": "session ended"})
-    call("POST", f"/api/agents/{agent}/terminate", {"reason": "session ended"})
+        call("POST", f"/api/agents/{worker}/terminate", {"reason": "session ended"}, base=base)
+    call("POST", f"/api/agents/{agent}/terminate", {"reason": "session ended"}, base=base)
     drop_state(session_id)
 
 
@@ -316,13 +432,14 @@ def main():
         debug(f"не разобрал stdin: {exc}")
         payload = {}
 
-    if out_of_scope(payload):
-        return 0
-
     session_id = payload.get("session_id", "")
     state = load_state(session_id)
+
     try:
-        COMMANDS[command](payload, state)
+        target = resolve_target(payload, state)
+        if target is None:
+            return 0
+        COMMANDS[command](payload, target, state)
     except Exception as exc:
         debug(f"{command} упал: {exc}")
     finally:

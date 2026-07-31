@@ -8,8 +8,6 @@ import (
 	"strings"
 )
 
-
-
 type CopierOptions struct {
 	RepoPath    string
 	MaxRepoSize int64
@@ -87,6 +85,15 @@ func (c *ShadowCopier) CreateBaseline() (*CopyResult, error) {
 		srcPath := filepath.Join(c.opts.RepoPath, relPath)
 		destPath := filepath.Join(c.shadowDir, relPath)
 
+		// git ls-files reports a nested repository — a worktree under
+		// .claude/worktrees, say — as a single directory entry rather than
+		// descending into it. Copying that as a file fails, taking startup
+		// down with it. Skip directories, as the size check above already
+		// does; their contents belong to the other repository anyway.
+		if info, statErr := os.Lstat(srcPath); statErr != nil || info.IsDir() {
+			continue
+		}
+
 		if err := copyFileContents(srcPath, destPath); err != nil {
 			_ = os.RemoveAll(c.shadowDir)
 			return nil, err
@@ -97,7 +104,6 @@ func (c *ShadowCopier) CreateBaseline() (*CopyResult, error) {
 
 	return result, nil
 }
-
 
 func (c *ShadowCopier) CopyFile(relPath string) error {
 	cleanRel := filepath.Clean(relPath)

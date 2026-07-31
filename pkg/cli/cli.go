@@ -178,23 +178,43 @@ func NewRootCmd() *cobra.Command {
 			// root project, without changing anything about the routes above.
 			var mr *multiRouter
 			var handler http.Handler = serverInst
-			if cfg.ProjectsRoot != "" {
-				var allowlist []string
-				if strings.TrimSpace(cfg.Projects) != "" {
-					for _, name := range strings.Split(cfg.Projects, ",") {
-						if name = strings.TrimSpace(name); name != "" {
-							allowlist = append(allowlist, name)
+			if cfg.ProjectsRoot != "" || strings.TrimSpace(cfg.ProjectPaths) != "" {
+				var discovered []registry.Project
+				if cfg.ProjectsRoot != "" {
+					var allowlist []string
+					if strings.TrimSpace(cfg.Projects) != "" {
+						for _, name := range strings.Split(cfg.Projects, ",") {
+							if name = strings.TrimSpace(name); name != "" {
+								allowlist = append(allowlist, name)
+							}
 						}
 					}
+
+					discovered, err = registry.Discover(cfg.ProjectsRoot, allowlist)
+					if err != nil {
+						diskMonitor.Stop()
+						_ = copier.Cleanup()
+						return err
+					}
+					cmd.Printf("Discovered %d additional project(s) under %s\n", len(discovered), cfg.ProjectsRoot)
 				}
 
-				projects, err := registry.Discover(cfg.ProjectsRoot, allowlist)
-				if err != nil {
-					diskMonitor.Stop()
-					_ = copier.Cleanup()
-					return err
+				var explicit []registry.Project
+				if strings.TrimSpace(cfg.ProjectPaths) != "" {
+					explicit, err = registry.FromPaths(strings.Split(cfg.ProjectPaths, ","))
+					if err != nil {
+						diskMonitor.Stop()
+						_ = copier.Cleanup()
+						return err
+					}
+					cmd.Printf("Added %d explicitly listed project(s)\n", len(explicit))
 				}
-				cmd.Printf("Discovered %d additional project(s) under %s\n", len(projects), cfg.ProjectsRoot)
+
+				// The root project is already served on the unprefixed routes.
+				// Discovering it again under /p/{id} would list it twice in the
+				// switcher and, if opened, spin up a second shadow copy of the
+				// same repository.
+				projects := registry.Exclude(registry.Merge(discovered, explicit), cfg.Path)
 
 				mr = newMultiRouter(ctx, serverInst, "default", filepath.Base(cfg.Path), cfg.Path, cfg, projects, cmd.Printf)
 				handler = mr
@@ -267,6 +287,7 @@ func NewRootCmd() *cobra.Command {
 	cmd.Flags().StringVar(&cfg.APIToken, "api-token", "", "Require 'Authorization: Bearer <token>' on the ingest API (recommended with --host)")
 	cmd.Flags().StringVar(&cfg.ProjectsRoot, "projects-root", "", "Directory whose git-repo subdirectories become switchable extra projects, reachable at /p/{id}/... (off by default)")
 	cmd.Flags().StringVar(&cfg.Projects, "projects", "", "Comma-separated allowlist of directory names under --projects-root to expose (default: all discovered)")
+	cmd.Flags().StringVar(&cfg.ProjectPaths, "project-paths", "", "Comma-separated repository paths to expose in addition to --projects-root discovery (for repos that live elsewhere)")
 
 	return cmd
 }

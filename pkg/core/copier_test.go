@@ -83,6 +83,55 @@ func TestShadowCopier_CreateBaseline(t *testing.T) {
 	}
 }
 
+func TestShadowCopier_CreateBaseline_NestedRepo(t *testing.T) {
+	tempDir := t.TempDir()
+
+	if err := exec.Command("git", "init", tempDir).Run(); err != nil {
+		t.Fatalf("failed to init git repo: %v", err)
+	}
+
+	keep := filepath.Join(tempDir, "keep.go")
+	if err := os.WriteFile(keep, []byte("package main\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	// A nested repository — what a git worktree under .claude/worktrees looks
+	// like. git ls-files reports it as one directory entry instead of
+	// descending, which used to make the copy loop try to read a directory as
+	// a file and abort startup.
+	nested := filepath.Join(tempDir, "nested")
+	if err := os.MkdirAll(nested, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := exec.Command("git", "init", nested).Run(); err != nil {
+		t.Fatalf("failed to init nested repo: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(nested, "inner.go"), []byte("package inner\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	copier := NewShadowCopier(CopierOptions{
+		RepoPath:    tempDir,
+		MaxRepoSize: 10 * 1024 * 1024,
+		PID:         99997,
+	})
+	defer copier.Cleanup()
+
+	res, err := copier.CreateBaseline()
+	if err != nil {
+		t.Fatalf("CreateBaseline must survive a nested repository, got: %v", err)
+	}
+
+	if _, err := os.Stat(filepath.Join(res.ShadowDir, "keep.go")); err != nil {
+		t.Errorf("expected keep.go to be copied, got %v", err)
+	}
+	for _, f := range res.CopiedFiles {
+		if strings.HasPrefix(f, "nested") {
+			t.Errorf("nested repository must not be copied, got %q", f)
+		}
+	}
+}
+
 func TestShadowCopier_CreateBaseline_ExceedsSize(t *testing.T) {
 	tempDir := t.TempDir()
 

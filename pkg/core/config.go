@@ -21,4 +21,8 @@ type Config struct {
 	// Projects is a comma-separated allowlist of directory names to keep from
 	// ProjectsRoot; empty means "watch everything found there".
 	Projects string `mapstructure:"projects"`
+	// ProjectPaths is a comma-separated list of repository paths to expose in
+	// addition to anything found under ProjectsRoot. It covers repositories
+	// that do not share a parent directory with the rest.
+	ProjectPaths string `mapstructure:"project-paths"`
 }
