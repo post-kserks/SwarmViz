@@ -1,0 +1,90 @@
+{
+  "name": "swarmviz",
+  "displayName": "SwarmViz",
+  "description": "Live multi-agent swarm visualizer — agent graph, attributed diff stream, file tree and LOC delta, inside VS Code",
+  "version": "0.1.0",
+  "publisher": "swarmviz",
+  "engines": {
+    "vscode": "^1.85.0"
+  },
+  "categories": [
+    "Visualization",
+    "Other"
+  ],
+  "main": "./dist/extension.js",
+  "contributes": {
+    "commands": [
+      {
+        "command": "swarmviz.open",
+        "title": "Open Swarm View",
+        "category": "SwarmViz"
+      },
+      {
+        "command": "swarmviz.restart",
+        "title": "Restart Server",
+        "category": "SwarmViz"
+      },
+      {
+        "command": "swarmviz.stop",
+        "title": "Stop Server",
+        "category": "SwarmViz"
+      },
+      {
+        "command": "swarmviz.showLog",
+        "title": "Show Server Log",
+        "category": "SwarmViz"
+      }
+    ],
+    "configuration": {
+      "title": "SwarmViz",
+      "properties": {
+        "swarmviz.binaryPath": {
+          "type": "string",
+          "default": "",
+          "markdownDescription": "Path to the `swarmviz` binary. Empty resolves `./swarmviz` in the workspace folder, then `swarmviz` on `PATH`."
+        },
+        "swarmviz.serverUrl": {
+          "type": "string",
+          "default": "",
+          "markdownDescription": "Attach to a server that is already running (e.g. `http://127.0.0.1:8942`) instead of starting one. That server must have been started with `--allow-origin 'vscode-webview://*'`."
+        },
+        "swarmviz.port": {
+          "type": "number",
+          "default": 0,
+          "description": "Port for the spawned server. 0 lets the kernel pick a free one, which is what you want when several windows are open."
+        },
+        "swarmviz.projectsRoot": {
+          "type": "string",
+          "default": "",
+          "markdownDescription": "Passed as `--projects-root`: git repositories directly under this directory become switchable in the view alongside the workspace folder."
+        },
+        "swarmviz.extraArgs": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": [],
+          "description": "Extra command-line arguments appended to the spawned server."
+        },
+        "swarmviz.stopServerOnClose": {
+          "type": "boolean",
+          "default": true,
+          "description": "Stop the spawned server when the swarm view is closed. Turning this off keeps the watcher and its shadow copy alive in the background."
+        }
+      }
+    }
+  },
+  "scripts": {
+    "build": "esbuild src/extension.ts --bundle --outfile=dist/extension.js --external:vscode --format=cjs --platform=node --target=node18",
+    "watch": "npm run build -- --sourcemap --watch",
+    "typecheck": "tsc --noEmit",
+    "test": "node --test src/*.test.ts",
+    "package": "npx --yes @vscode/vsce package --no-dependencies"
+  },
+  "devDependencies": {
+    "@types/node": "^20.11.0",
+    "@types/vscode": "^1.85.0",
+    "esbuild": "^0.20.0",
+    "typescript": "^5.3.0"
+  }
+}

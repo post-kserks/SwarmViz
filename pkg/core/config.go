@@ -25,4 +25,10 @@ type Config struct {
 	// addition to anything found under ProjectsRoot. It covers repositories
 	// that do not share a parent directory with the rest.
 	ProjectPaths string `mapstructure:"project-paths"`
+	// AllowOrigins is a comma-separated CORS allowlist. Empty (the default)
+	// sends no CORS headers at all, which is what a browser tab on the same
+	// origin needs. A host page served from somewhere else — the VS Code
+	// webview, whose documents live on vscode-webview:// — cannot read /api
+	// responses without being listed here.
+	AllowOrigins string `mapstructure:"allow-origin"`
 }

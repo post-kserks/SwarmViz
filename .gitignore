@@ -41,3 +41,7 @@ ORIGINAL_REQUEST.md
 # Python
 __pycache__/
 *.pyc
+
+# VS Code extension build output (integrations/vscode)
+integrations/vscode/dist/
+*.vsix

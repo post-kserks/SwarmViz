@@ -114,7 +114,12 @@ func (v *Validator) validateGitRepo(absPath string) error {
 }
 
 func (v *Validator) validatePort() error {
-	if v.Cfg.Port <= 0 || v.Cfg.Port > 65535 {
+	// Port 0 means "let the kernel pick a free one" — there is nothing to
+	// check for availability, and the chosen port is printed at startup.
+	if v.Cfg.Port == 0 {
+		return nil
+	}
+	if v.Cfg.Port < 0 || v.Cfg.Port > 65535 {
 		return &ValidationError{Message: fmt.Sprintf("Error: Invalid port number: %d", v.Cfg.Port)}
 	}
 	address := fmt.Sprintf("%s:%d", v.Cfg.Host, v.Cfg.Port)

@@ -100,3 +100,15 @@ Widgets are numbered by layout position (`Widget1_SubagentMap` … `Widget4_LocC
 - An extra project's full pipeline (shadow copy, hub, stats, disk monitor, diff engine, watcher, its own `server.Server`) only starts on first request to `/p/{id}/...` (`pkg/cli/multi.go`'s `multiRouter.getOrStart`), not at process startup — so pointing `--projects-root` at a large directory of repos doesn't eagerly shadow-copy all of them.
 - This wiring is deliberately a separate, near-duplicate copy of the root `RunE` wiring in `pkg/cli/cli.go`, not a shared refactor — the root path (the one actually deployed) stays byte-for-byte unchanged.
 - `core.CopierOptions.RunID` disambiguates shadow dirs (`swarmviz_run_<RunID>` vs the default `swarmviz_run_<PID>`) so extra projects in the same process don't collide. `core.Validator.SkipPortCheck` skips the bind-and-close check for extra projects, since they share the root's already-bound port.
+
+## Embedding the UI in a host (VS Code extension)
+
+`integrations/vscode/` runs the UI inside the editor. It spawns this same binary and renders the page the binary serves — no reimplementation of watching, diffing or attribution, and no bundled copy of the frontend, so the UI cannot drift from the backend it talks to.
+
+Three seams make that possible; each exists only for embedding and is inert in a normal browser tab:
+
+- `pkg/server/cors.go` + `--allow-origin`: a webview document lives on an opaque `vscode-webview://<uuid>` origin, so its `fetch('/api/projects')` is cross-origin. Empty allowlist (the default) sends no CORS headers at all. Entries match as `*`, `scheme://*`, or exactly. WebSocket upgrades are untouched — CORS does not apply to them, and `upgrader.CheckOrigin` already allows any origin.
+- `--port 0`: `cli.go` binds with `net.Listen` before `http.Server.Serve` and prints `SwarmViz listening on http://host:port`. The extension parses that line, so several editor windows can each run their own server. **Keep that line's shape stable** — `integrations/vscode/src/server.ts` matches it with a regex.
+- `frontend/src/utils/host.ts`: the UI must not derive the backend from `window.location`, because in a webview that is `vscode-webview://`, not the server. The extension injects `window.__SWARMVIZ_ORIGIN__` into the page; `apiUrl()`/`socketUrl()` read it and fall back to `window.location` everywhere else. The same module wraps `acquireVsCodeApi()`, so `useRevealInEditor()` returns `null` in a browser tab and callers render plain text instead of a dead link.
+
+`integrations/vscode/src/html.ts` rewrites the served `index.html` for the webview: absolutises root-relative asset URLs, strips Vite's `crossorigin` (which would demand CORS headers on every asset), nonces the script tags and prepends a CSP. It imports nothing from `vscode` so `npm test` can cover it outside the editor.

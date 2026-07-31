@@ -1,6 +1,7 @@
 import { useEffect, useRef, useCallback } from 'react';
 import { useSwarmStore } from '../store/useSwarmStore';
 import { WSEventEnvelope, ControlAction } from '../types/swarm';
+import { socketUrl } from '../utils/host';
 
 const BACKOFF_INITIAL_MS = 1000;
 const BACKOFF_MAX_MS = 10000;
@@ -37,11 +38,10 @@ export function useSwarmSocket(basePath: string | null) {
     if (socketRef.current?.readyState === WebSocket.OPEN) return;
 
     const lastSeq = useSwarmStore.getState().lastSeq;
-    const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-    const host = window.location.host;
-
     const sinceParam = lastSeq > 0 ? `?since=${lastSeq}` : '';
-    const wsUrl = `${protocol}//${host}${basePath}/ws${sinceParam}`;
+    // Not derived from window.location: inside the VS Code webview the
+    // document's origin is vscode-webview://, not the backend (see utils/host).
+    const wsUrl = socketUrl(basePath, sinceParam);
 
     setConnectionStatus(backoffRef.current > BACKOFF_INITIAL_MS ? 'reconnecting' : 'connecting');
 

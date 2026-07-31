@@ -3,6 +3,7 @@ package cli
 import (
 	"context"
 	"fmt"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
@@ -220,21 +221,48 @@ func NewRootCmd() *cobra.Command {
 				handler = mr
 			}
 
+			// 8c. Optional CORS allowlist, for hosts that embed the UI in a
+			// document of their own (see server.CORS). Wrapping the final
+			// handler covers the root project and every /p/{id} alike.
+			handler = server.CORS(handler, []string{cfg.AllowOrigins})
+
 			// 9. Start HTTP Server
+			//
+			// Bound up front rather than via ListenAndServe so that --port 0
+			// is usable: the kernel picks a free port and the line below
+			// reports which one, which is how a supervising process (the VS
+			// Code extension) finds a server it did not choose the port for.
 			addr := fmt.Sprintf("%s:%d", cfg.Host, cfg.Port)
+			listener, err := net.Listen("tcp", addr)
+			if err != nil {
+				diskMonitor.Stop()
+				_ = copier.Cleanup()
+				if mr != nil {
+					mr.stopAll()
+				}
+				return fmt.Errorf("failed to listen on %s: %w", addr, err)
+			}
+
+			boundPort := cfg.Port
+			if tcpAddr, ok := listener.Addr().(*net.TCPAddr); ok {
+				boundPort = tcpAddr.Port
+			}
+
 			httpServer := &http.Server{
-				Addr:    addr,
 				Handler: handler,
 			}
 
 			go func() {
-				if err := httpServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+				if err := httpServer.Serve(listener); err != nil && err != http.ErrServerClosed {
 					cmd.Printf("HTTP server error: %v\n", err)
 				}
 			}()
 
+			// Keep this line's shape stable: integrations/vscode parses the
+			// URL out of it to learn the port when it passed --port 0.
+			cmd.Printf("SwarmViz listening on http://%s:%d\n", cfg.Host, boundPort)
 			cmd.Printf("SwarmViz backend core initialized. Listening on %s:%d (Monitored Path: %s)\n",
-				cfg.Host, cfg.Port, cfg.Path)
+				cfg.Host, boundPort, cfg.Path)
 
 			// 10. Signal Trap & Graceful Shutdown with 3s Timeout
 			sigChan := make(chan os.Signal, 1)
@@ -275,7 +303,7 @@ func NewRootCmd() *cobra.Command {
 		},
 	}
 
-	cmd.Flags().IntVarP(&cfg.Port, "port", "p", 8942, "Port for web interface")
+	cmd.Flags().IntVarP(&cfg.Port, "port", "p", 8942, "Port for web interface (0 picks a free one and prints it)")
 	cmd.Flags().StringVarP(&cfg.Path, "path", "d", "./", "Path to monitored git repository")
 	cmd.Flags().DurationVar(&cfg.Interval, "interval", 300*time.Millisecond, "Debounce interval for file events per file")
 	cmd.Flags().DurationVar(&cfg.ClaimTTL, "claim-ttl", 2*time.Second, "TTL for agent file claims before auto-release")
@@ -288,6 +316,7 @@ func NewRootCmd() *cobra.Command {
 	cmd.Flags().StringVar(&cfg.ProjectsRoot, "projects-root", "", "Directory whose git-repo subdirectories become switchable extra projects, reachable at /p/{id}/... (off by default)")
 	cmd.Flags().StringVar(&cfg.Projects, "projects", "", "Comma-separated allowlist of directory names under --projects-root to expose (default: all discovered)")
 	cmd.Flags().StringVar(&cfg.ProjectPaths, "project-paths", "", "Comma-separated repository paths to expose in addition to --projects-root discovery (for repos that live elsewhere)")
+	cmd.Flags().StringVar(&cfg.AllowOrigins, "allow-origin", "", "Comma-separated CORS allowlist for hosts that embed the UI (e.g. 'vscode-webview://*'); empty sends no CORS headers")
 
 	return cmd
 }

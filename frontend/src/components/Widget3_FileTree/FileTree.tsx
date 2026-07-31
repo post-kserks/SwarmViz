@@ -9,6 +9,7 @@ import {
   useSwarmStore,
 } from '../../store/useSwarmStore';
 import { FileTreeNodeItem } from './FileTreeNodeItem';
+import { useRevealInEditor } from '../../hooks/useRevealInEditor';
 
 export const FileTree: React.FC = () => {
   const fileTree = useFileTree();
@@ -17,6 +18,8 @@ export const FileTree: React.FC = () => {
   const showAllFiles = useShowAllFiles();
   const selectedFile = useSelectedFileFilter();
   const { setShowAllFiles, setSelectedFileFilter } = useSwarmStore();
+  // Non-null only when an editor is hosting the UI (VS Code extension).
+  const reveal = useRevealInEditor();
 
   const [searchQuery, setSearchQuery] = useState<string>('');
 
@@ -86,7 +89,12 @@ export const FileTree: React.FC = () => {
               conflicts={conflicts}
               showAllFiles={showAllFiles}
               searchQuery={searchQuery}
-              onSelectFile={(path) => setSelectedFileFilter(path === selectedFile ? null : path)}
+              onSelectFile={(path) => {
+                setSelectedFileFilter(path === selectedFile ? null : path);
+                // In an editor, selecting a file also opens it — the tree is
+                // then a navigable view of the repository, not just a filter.
+                reveal?.(path);
+              }}
               selectedFile={selectedFile}
             />
           ))

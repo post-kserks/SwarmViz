@@ -1,0 +1,20 @@
+{
+  "compilerOptions": {
+    "module": "commonjs",
+    "target": "ES2022",
+    "lib": ["ES2022"],
+    "rootDir": "src",
+    // esbuild does the emitting (see the build script); tsc is only ever run
+    // as a type checker, which is also what lets the tests import ".ts" paths
+    // the way `node --test` needs them.
+    "noEmit": true,
+    "allowImportingTsExtensions": true,
+    "strict": true,
+    "noUnusedLocals": true,
+    "noImplicitOverride": true,
+    "esModuleInterop": true,
+    "sourceMap": true,
+    "skipLibCheck": true
+  },
+  "include": ["src"]
+}

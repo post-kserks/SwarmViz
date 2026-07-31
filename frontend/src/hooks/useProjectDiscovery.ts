@@ -1,6 +1,7 @@
 import { useEffect } from 'react';
 import { useSwarmStore } from '../store/useSwarmStore';
 import { ProjectSummary } from '../types/swarm';
+import { apiUrl } from '../utils/host';
 
 const STORAGE_KEY = 'swarmviz.currentProjectId';
 
@@ -16,7 +17,7 @@ export function useProjectDiscovery() {
   useEffect(() => {
     let cancelled = false;
 
-    fetch('/api/projects')
+    fetch(apiUrl('/api/projects'))
       .then((res) => (res.ok ? (res.json() as Promise<ProjectSummary[]>) : Promise.reject(new Error(`HTTP ${res.status}`))))
       .then((projects) => {
         if (cancelled || !projects.length) return;

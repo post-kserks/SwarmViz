@@ -2,6 +2,8 @@ import React from 'react';
 import { EditEvent } from '../../types/swarm';
 import { DiffHunkViewer } from './DiffHunkViewer';
 import { AlertTriangle, FileCode, HardDrive } from 'lucide-react';
+import { useRevealInEditor } from '../../hooks/useRevealInEditor';
+import { hunkStartLine } from '../../utils/host';
 
 interface DiffCardProps {
   event: EditEvent;
@@ -10,6 +12,9 @@ interface DiffCardProps {
 
 export const DiffCard: React.FC<DiffCardProps> = ({ event, hasConflict }) => {
   const formattedTime = event.ts ? new Date(event.ts).toLocaleTimeString() : '';
+  // Non-null only when an editor is hosting the UI (VS Code extension); in a
+  // browser tab the file name stays plain text with nothing to click.
+  const reveal = useRevealInEditor();
 
   return (
     <div
@@ -24,10 +29,22 @@ export const DiffCard: React.FC<DiffCardProps> = ({ event, hasConflict }) => {
         <div className="flex items-center gap-2 truncate">
           <span className="text-purple-400 font-semibold">{event.agentId || 'external'}</span>
           <span className="text-slate-600">|</span>
-          <span className="text-slate-200 truncate font-medium flex items-center gap-1">
-            <FileCode className="w-3.5 h-3.5 text-blue-400 shrink-0" />
-            {event.file}
-          </span>
+          {reveal ? (
+            <button
+              type="button"
+              onClick={() => reveal(event.file, hunkStartLine(event.hunk))}
+              title={`Open ${event.file} in the editor`}
+              className="text-slate-200 truncate font-medium flex items-center gap-1 hover:text-blue-300 hover:underline underline-offset-2 transition-colors"
+            >
+              <FileCode className="w-3.5 h-3.5 text-blue-400 shrink-0" />
+              {event.file}
+            </button>
+          ) : (
+            <span className="text-slate-200 truncate font-medium flex items-center gap-1">
+              <FileCode className="w-3.5 h-3.5 text-blue-400 shrink-0" />
+              {event.file}
+            </span>
+          )}
         </div>
         <div className="flex items-center gap-2 shrink-0">
           <span className="text-emerald-400">+{event.added}</span>
