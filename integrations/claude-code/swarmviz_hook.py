@@ -13,6 +13,10 @@ claim-then-diff, на котором держится вся атрибуция.
 Полезная нагрузка хука читается из stdin как JSON. Скрипт никогда не должен
 ломать работу Claude Code: любая ошибка гасится, код возврата всегда 0.
 
+Сессия, запущенная в панели tmux, подписывается её координатами
+(`Claude [claude:0.1]` вместо `Claude · проект`), чтобы параллельные сессии в
+одном репозитории различались на карте.
+
 Хуки ставятся глобально, в ~/.claude/settings.json, и действуют на все проекты
 сразу. Поэтому скрипт сам выясняет, в каком репозитории идёт сессия, спрашивает
 у сервера список проектов (`GET /api/projects`) и шлёт события на префикс того
@@ -35,6 +39,7 @@ import os
 import subprocess
 import sys
 import tempfile
+import time
 import urllib.error
 import urllib.request
 
@@ -45,6 +50,8 @@ TIMEOUT = 1.5
 COLD_START_TIMEOUT = 8.0
 EDIT_TOOLS = {"Edit", "Write", "NotebookEdit", "MultiEdit"}
 DELEGATION_TOOL = "Task"
+# Как часто подтверждать существование агента на сервере (см. ensure_agent).
+AGENT_REASSERT_SEC = 30
 
 BASE_URL = os.environ.get("SWARMVIZ_URL", "http://127.0.0.1:8942").rstrip("/")
 TOKEN = os.environ.get("SWARMVIZ_TOKEN") or None
@@ -100,7 +107,7 @@ def load_state(session_id):
         with open(state_path(session_id)) as fh:
             return json.load(fh)
     except Exception:
-        return {"agent_created": False, "claims": {}, "workers": {}, "project": None}
+        return {"agent_seen_at": None, "claims": {}, "workers": {}, "project": None}
 
 
 def save_state(session_id, state):
@@ -127,6 +134,51 @@ def drop_state(session_id):
 
 def agent_id_for(session_id):
     return "claude-" + (session_id or "unknown")[:8]
+
+
+def tmux_context():
+    """`сессия:окно.панель` tmux, в которой идёт сессия, либо None.
+
+    tmux экспортирует `TMUX`/`TMUX_PANE` в запущенный в панели процесс, Claude
+    Code передаёт своё окружение хукам — значит внутри панели переменные видны,
+    а снаружи (обычный терминал, VS Code) их нет и метки не будет.
+
+    Спрашиваем человекочитаемое имя у самого tmux; если бинарника нет или
+    сервер не ответил, сгодится и сырой id панели (`%3`) — задача метки в том,
+    чтобы параллельные сессии в разных панелях не выглядели одинаково.
+    """
+    pane = os.environ.get("TMUX_PANE")
+    if not pane or not os.environ.get("TMUX"):
+        return None
+    try:
+        out = subprocess.run(
+            ["tmux", "display-message", "-p", "-t", pane, "#S:#I.#P"],
+            capture_output=True, text=True, timeout=TIMEOUT,
+        )
+        if out.returncode == 0 and out.stdout.strip():
+            return out.stdout.strip()
+        debug(f"tmux display-message -t {pane} -> код {out.returncode}")
+    except Exception as exc:
+        debug(f"tmux display-message не отработал: {exc}")
+    return pane
+
+
+def agent_label(target):
+    """Подпись узла сессии: панель tmux, если сессия в ней, иначе проект.
+
+    Идентификатор агента завязан на session_id и так уникален, но на карте
+    видна именно подпись — без панели несколько параллельных сессий в одном
+    репозитории превращаются в одинаковые «Claude · проект».
+
+    Панель вытесняет имя проекта, а не дописывается к нему: узел на карте узкий
+    и режет подпись по ширине, а внутри одного проекта имя проекта у всех
+    сессий и так одинаковое — различает как раз панель. Вне tmux подпись
+    прежняя.
+    """
+    pane = tmux_context()
+    if pane:
+        return f"Claude [{pane}]"
+    return f"Claude · {target['name']}"
 
 
 def worker_id_for(session_id, tool_input):
@@ -297,17 +349,29 @@ def relative_path(target, file_path):
 # --------------------------------------------------------------------------
 
 def ensure_agent(session_id, target, state):
-    """Создаёт агента сессии один раз за сессию."""
-    if state.get("agent_created"):
+    """Поддерживает существование узла сессии на сервере.
+
+    Не «создать один раз»: хаб держит агентов только в памяти, поэтому после
+    рестарта SwarmViz узел исчезает, а сессия Claude Code живёт дальше. Липкий
+    флаг «уже создан» означал бы, что до конца сессии claim'ы уходят агенту,
+    которого сервер не знает — правки видны, а на карте пусто.
+
+    Поэтому запись периодически подтверждается: `POST /api/agents`
+    идемпотентен (хаб кладёт узел по agent_id), а лишний запрос раз в
+    AGENT_REASSERT_SEC на фоне остальных вызовов хука ничего не стоит.
+    """
+    now = time.time()
+    seen = state.get("agent_seen_at")
+    if isinstance(seen, (int, float)) and 0 <= now - seen < AGENT_REASSERT_SEC:
         return
     ok = call("POST", "/api/agents", {
         "agent_id": agent_id_for(session_id),
         "agent_type": "orchestrator",
         "parent_id": "",
-        "label": f"Claude · {target['name']}",
+        "label": agent_label(target),
     }, base=target["base"], timeout=COLD_START_TIMEOUT)
     if ok is not None:
-        state["agent_created"] = True
+        state["agent_seen_at"] = now
 
 
 def release_previous_claim(target, state, rel):
