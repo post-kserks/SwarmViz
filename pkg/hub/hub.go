@@ -216,9 +216,14 @@ func (h *EventHub) ClaimFile(agentID string, filePath string) string {
 
 	h.mu.Lock()
 	h.claimsByID[claimID] = c
-	h.claimsByFile[cleanPath] = append(h.claimsByFile[cleanPath], c)
 
-	activeCount := len(h.claimsByFile[cleanPath])
+	// Count distinct claimants before and after, so CONFLICT_DETECTED fires
+	// once on the 1 -> 2 agents transition and never when an agent re-claims a
+	// file it already holds.
+	claimantsBefore := len(h.getClaimantIDsLocked(cleanPath))
+	h.claimsByFile[cleanPath] = append(h.claimsByFile[cleanPath], c)
+	claimantIDs := h.getClaimantIDsLocked(cleanPath)
+
 	eventsToDispatch := make([]HubEvent, 0, 2)
 
 	eventsToDispatch = append(eventsToDispatch, HubEvent{
@@ -231,14 +236,13 @@ func (h *EventHub) ClaimFile(agentID string, filePath string) string {
 		},
 	})
 
-	if activeCount == 2 {
-		agentIDs := h.getClaimantIDsLocked(cleanPath)
+	if claimantsBefore == 1 && len(claimantIDs) == 2 {
 		eventsToDispatch = append(eventsToDispatch, HubEvent{
 			Type:      "CONFLICT_DETECTED",
 			Timestamp: now,
 			Data: map[string]interface{}{
 				"file":      cleanPath,
-				"agent_ids": agentIDs,
+				"agent_ids": claimantIDs,
 			},
 		})
 	}
@@ -295,10 +299,13 @@ func (h *EventHub) releaseClaimLocked(claimID string, reason ReleaseReason) ([]H
 		}
 	}
 
-	prevCount := len(fileClaims)
-	newCount := len(updated)
+	// Distinct claimants, to mirror CONFLICT_DETECTED: dropping one of an
+	// agent's own duplicate claims never resolves anything, and the file stays
+	// conflicted until a whole agent lets go.
+	prevCount := len(distinctAgentIDs(fileClaims))
+	newCount := len(distinctAgentIDs(updated))
 
-	if newCount == 0 {
+	if len(updated) == 0 {
 		delete(h.claimsByFile, cleanPath)
 	} else {
 		h.claimsByFile[cleanPath] = updated
@@ -449,11 +456,9 @@ func (h *EventHub) GetInitState() InitState {
 
 	conflictsCopy := make(map[string][]string)
 	for file, claims := range h.claimsByFile {
-		if len(claims) >= 2 {
-			ids := make([]string, len(claims))
-			for i, c := range claims {
-				ids[i] = c.AgentID
-			}
+		// Distinct agents, same rule as CONFLICT_DETECTED: a file is only
+		// conflicted when two different agents hold it.
+		if ids := distinctAgentIDs(claims); len(ids) >= 2 {
 			conflictsCopy[file] = ids
 		}
 	}
@@ -473,13 +478,29 @@ func (h *EventHub) GetInitSnapshot() (map[string]*AgentNode, []AgentEdge, map[st
 }
 
 func (h *EventHub) getClaimantIDsLocked(cleanPath string) []string {
-	claims, exists := h.claimsByFile[cleanPath]
-	if !exists || len(claims) == 0 {
+	return distinctAgentIDs(h.claimsByFile[cleanPath])
+}
+
+// distinctAgentIDs returns the claimants of a file, one entry per agent, in
+// order of first claim.
+//
+// One agent can legitimately hold several live claims on the same path: it
+// edits the file again before the previous claim's TTL runs out. That is not a
+// conflict — a conflict is two DIFFERENT agents sharing a file. Counting raw
+// claims here made an agent collide with itself, which pushed the edit to
+// attribution `conflict` / agent `multi` and lost the real author.
+func distinctAgentIDs(claims []*Claim) []string {
+	if len(claims) == 0 {
 		return []string{}
 	}
-	ids := make([]string, len(claims))
-	for i, c := range claims {
-		ids[i] = c.AgentID
+	ids := make([]string, 0, len(claims))
+	seen := make(map[string]struct{}, len(claims))
+	for _, c := range claims {
+		if _, dup := seen[c.AgentID]; dup {
+			continue
+		}
+		seen[c.AgentID] = struct{}{}
+		ids = append(ids, c.AgentID)
 	}
 	return ids
 }

@@ -91,3 +91,12 @@ Widgets are numbered by layout position (`Widget1_SubagentMap` … `Widget4_LocC
 - `frontend/dist/` is git-ignored except for a committed `.gitkeep`, which exists solely so `//go:embed all:dist` resolves on a clean clone. A Go build without a frontend build succeeds but embeds an empty UI — `frontend.IsBuilt()` detects this and the binary warns at startup. The API and WebSocket still work.
 - `go.sum` was previously committed with hashes that did not match `sum.golang.org`. If verification fails, check the real hash (`curl https://sum.golang.org/lookup/<module>@<version>`) before regenerating — don't assume the checksum database is wrong.
 - `go.mod` targets Go 1.22, which constrains dependency upgrades (`golang.org/x/sys` is pinned back to v0.15.0 for this reason). Bumping a dependency that requires a newer toolchain silently breaks the advertised minimum.
+
+## Multi-project mode
+
+`--path`/`--port` alone behave exactly as before: one process, one repo, routes at `/ws` and `/api/...` unprefixed. Adding `--projects-root <dir>` (optionally narrowed with `--projects name1,name2`) additionally discovers every git repo directly under `<dir>` (`pkg/registry.Discover`) and exposes each one, lazily, at `/p/{id}/...` on the same port — the root project keeps its unprefixed routes untouched, which is what keeps `integrations/claude-code/swarmviz_hook.py` (hits bare `/api/...`) working without changes.
+
+- `GET /api/projects` lists the root project plus every discovered one: `{id, name, path, basePath, watching}`. `basePath` is what the frontend prepends to `/ws`/`/api/...` (`""` for root, `"/p/{id}"` otherwise).
+- An extra project's full pipeline (shadow copy, hub, stats, disk monitor, diff engine, watcher, its own `server.Server`) only starts on first request to `/p/{id}/...` (`pkg/cli/multi.go`'s `multiRouter.getOrStart`), not at process startup — so pointing `--projects-root` at a large directory of repos doesn't eagerly shadow-copy all of them.
+- This wiring is deliberately a separate, near-duplicate copy of the root `RunE` wiring in `pkg/cli/cli.go`, not a shared refactor — the root path (the one actually deployed) stays byte-for-byte unchanged.
+- `core.CopierOptions.RunID` disambiguates shadow dirs (`swarmviz_run_<RunID>` vs the default `swarmviz_run_<PID>`) so extra projects in the same process don't collide. `core.Validator.SkipPortCheck` skips the bind-and-close check for extra projects, since they share the root's already-bound port.

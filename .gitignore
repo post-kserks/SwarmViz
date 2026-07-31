@@ -38,3 +38,6 @@ coverage.txt
 #Other
 SwarmViz_TZ_v3.1.md
 ORIGINAL_REQUEST.md
+# Python
+__pycache__/
+*.pyc

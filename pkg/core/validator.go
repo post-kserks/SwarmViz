@@ -25,6 +25,10 @@ func (e *ValidationError) Error() string {
 
 type Validator struct {
 	Cfg *Config
+	// SkipPortCheck bypasses the bind-and-close port availability check.
+	// Extra projects in multi-project mode share a port already bound by
+	// the root HTTP server, so re-checking it per project would always fail.
+	SkipPortCheck bool
 }
 
 func NewValidator(cfg *Config) *Validator {
@@ -48,8 +52,10 @@ func (v *Validator) ValidateAll() error {
 	}
 
 	// 3. Port available
-	if err := v.validatePort(); err != nil {
-		return err
+	if !v.SkipPortCheck {
+		if err := v.validatePort(); err != nil {
+			return err
+		}
 	}
 
 	// 4. Git binary in PATH

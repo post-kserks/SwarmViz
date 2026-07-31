@@ -1,6 +1,6 @@
 import React from 'react';
 import { X, Play, Pause, AlertCircle, FileCode, Terminal } from 'lucide-react';
-import { useSwarmStore } from '../../store/useSwarmStore';
+import { useSwarmStore, useCurrentBasePath } from '../../store/useSwarmStore';
 import { useSwarmSocket } from '../../hooks/useSwarmSocket';
 
 interface AgentPopoverProps {
@@ -18,7 +18,7 @@ export const AgentPopover: React.FC<AgentPopoverProps> = ({ agentId, onClose }) 
     return { agent: ag, activeClaims: claims, isControlDisabled: disabled };
   });
 
-  const { sendControl } = useSwarmSocket();
+  const { sendControl } = useSwarmSocket(useCurrentBasePath());
 
   if (!agent) return null;
 

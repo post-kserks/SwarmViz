@@ -8,12 +8,33 @@ import {
   LocPoint,
   ActiveClaim,
   ToastMessage,
+  ProjectSummary,
   WSEventEnvelope,
 } from '../types/swarm';
 import { lttbDownsample } from '../utils/lttb';
 
 const MAX_EDIT_EVENTS = 1000;
 const MAX_LOC_HISTORY = 500;
+
+// Fields that hold data scoped to whichever project is currently selected.
+// Reused both for the store's initial state and to reset on project switch,
+// so the two can't drift out of sync.
+const initialProjectState = {
+  agents: {} as Record<string, AgentNode>,
+  edges: [] as AgentEdge[],
+  fileTree: null as FileTreeNode | null,
+  editStream: [] as EditEvent[],
+  locHistory: [] as LocPoint[],
+  activeClaims: {} as Record<string, ActiveClaim>,
+  conflicts: {} as Record<string, string[]>,
+  lastSeq: 0,
+  serverWarning: null as string | null,
+  isDegraded: false,
+  disabledControls: {} as Record<string, boolean>,
+  selectedAgentPopover: null as string | null,
+  selectedFileFilter: null as string | null,
+  toastNotifications: [] as ToastMessage[],
+};
 
 function updateTreeNode(node: FileTreeNode, targetPath: string, editCount: number, state?: string): FileTreeNode {
   const isDir = node.isDir || node.isDirectory;
@@ -52,9 +73,13 @@ export interface SwarmVizStore {
   selectedFileFilter: string | null;
   showAllFiles: boolean;
   toastNotifications: ToastMessage[];
+  projects: ProjectSummary[];
+  currentProjectId: string | null;
 
   // Action methods
   setConnectionStatus: (status: ConnectionStatus) => void;
+  setProjects: (projects: ProjectSummary[]) => void;
+  switchProject: (projectId: string) => void;
   setSelectedAgentPopover: (agentId: string | null) => void;
   clearServerWarning: () => void;
   setControlDisabled: (agentId: string, disabled: boolean) => void;
@@ -182,21 +207,10 @@ export const useSwarmStore = create<SwarmVizStore>((set, get) => {
 
   return {
     connectionStatus: 'connecting',
-    agents: {},
-    edges: [],
-    fileTree: null,
-    editStream: [],
-    locHistory: [],
-    activeClaims: {},
-    conflicts: {},
-    lastSeq: 0,
-    serverWarning: null,
-    isDegraded: false,
-    disabledControls: {},
-    selectedAgentPopover: null,
-    selectedFileFilter: null,
+    ...initialProjectState,
     showAllFiles: false,
-    toastNotifications: [],
+    projects: [],
+    currentProjectId: null,
 
     actions: storeActions,
 
@@ -207,6 +221,14 @@ export const useSwarmStore = create<SwarmVizStore>((set, get) => {
     handleWSEvent: storeActions.handleWSEvent,
 
     setLastSeq: (lastSeq: number) => set({ lastSeq }),
+
+    setProjects: (projects: ProjectSummary[]) => set({ projects }),
+
+    // Switching projects resets everything scoped to "the currently viewed
+    // project" in one atomic update, then reconnects (useSwarmSocket watches
+    // currentProjectId) so INIT_STATE repopulates it for the new project.
+    switchProject: (projectId: string) =>
+      set({ ...initialProjectState, currentProjectId: projectId }),
 
     handleInitState: (data: any) => {
       // The backend serialises agents with snake_case keys (agent_id,
@@ -463,3 +485,9 @@ export const useLocHistory = () => useSwarmStore((s) => s.locHistory);
 export const useToastNotifications = () => useSwarmStore((s) => s.toastNotifications);
 export const useSelectedFileFilter = () => useSwarmStore((s) => s.selectedFileFilter);
 export const useShowAllFiles = () => useSwarmStore((s) => s.showAllFiles);
+export const useProjects = () => useSwarmStore((s) => s.projects);
+export const useCurrentProjectId = () => useSwarmStore((s) => s.currentProjectId);
+// The active project's routing prefix for useSwarmSocket ("" for root, "/p/{id}"
+// otherwise, null until discovery has picked an initial project).
+export const useCurrentBasePath = () =>
+  useSwarmStore((s) => s.projects.find((p) => p.id === s.currentProjectId)?.basePath ?? null);

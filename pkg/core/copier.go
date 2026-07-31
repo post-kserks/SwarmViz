@@ -8,12 +8,14 @@ import (
 	"strings"
 )
 
-
-
 type CopierOptions struct {
 	RepoPath    string
 	MaxRepoSize int64
 	PID         int
+	// RunID, if set, disambiguates the shadow directory instead of PID.
+	// Needed when a single process runs multiple ShadowCopiers (one per
+	// watched project) that would otherwise collide on swarmviz_run_<PID>.
+	RunID string
 }
 
 type CopyResult struct {
@@ -29,10 +31,14 @@ type ShadowCopier struct {
 }
 
 func NewShadowCopier(opts CopierOptions) *ShadowCopier {
-	if opts.PID <= 0 {
-		opts.PID = os.Getpid()
+	disambiguator := opts.RunID
+	if disambiguator == "" {
+		if opts.PID <= 0 {
+			opts.PID = os.Getpid()
+		}
+		disambiguator = fmt.Sprintf("%d", opts.PID)
 	}
-	shadowDir := filepath.Join(os.TempDir(), fmt.Sprintf("swarmviz_run_%d", opts.PID))
+	shadowDir := filepath.Join(os.TempDir(), fmt.Sprintf("swarmviz_run_%s", disambiguator))
 	return &ShadowCopier{
 		opts:      opts,
 		shadowDir: shadowDir,
@@ -79,6 +85,15 @@ func (c *ShadowCopier) CreateBaseline() (*CopyResult, error) {
 		srcPath := filepath.Join(c.opts.RepoPath, relPath)
 		destPath := filepath.Join(c.shadowDir, relPath)
 
+		// git ls-files reports a nested repository — a worktree under
+		// .claude/worktrees, say — as a single directory entry rather than
+		// descending into it. Copying that as a file fails, taking startup
+		// down with it. Skip directories, as the size check above already
+		// does; their contents belong to the other repository anyway.
+		if info, statErr := os.Lstat(srcPath); statErr != nil || info.IsDir() {
+			continue
+		}
+
 		if err := copyFileContents(srcPath, destPath); err != nil {
 			_ = os.RemoveAll(c.shadowDir)
 			return nil, err
@@ -89,7 +104,6 @@ func (c *ShadowCopier) CreateBaseline() (*CopyResult, error) {
 
 	return result, nil
 }
-
 
 func (c *ShadowCopier) CopyFile(relPath string) error {
 	cleanRel := filepath.Clean(relPath)

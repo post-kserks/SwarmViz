@@ -109,6 +109,9 @@ func (e *Engine) ProcessEvent(event watcher.FSEvent) (*DiffResult, error) {
 	}
 
 	if event.Op == watcher.OpRemove {
+		if isTransient(shadowPath) {
+			return nil, nil
+		}
 		result.Status = StatusDeleted
 		_ = os.Remove(shadowPath)
 		return result, nil
@@ -117,6 +120,9 @@ func (e *Engine) ProcessEvent(event watcher.FSEvent) (*DiffResult, error) {
 	info, err := os.Stat(absPath)
 	if err != nil {
 		if os.IsNotExist(err) {
+			if isTransient(shadowPath) {
+				return nil, nil
+			}
 			result.Status = StatusDeleted
 			_ = os.Remove(shadowPath)
 			return result, nil
@@ -167,6 +173,23 @@ func (e *Engine) ProcessEvent(event watcher.FSEvent) (*DiffResult, error) {
 	}
 
 	return result, nil
+}
+
+// isTransient reports whether a path that is gone by the time the debounced
+// diff runs was ever part of the repository at all.
+//
+// The shadow baseline holds every tracked, non-ignored file, and gains an
+// entry the first time a new file is diffed. So a path missing from BOTH the
+// working tree and the shadow was never really there: it is an editor's
+// atomic-write scratch file — `<name>.tmp.<pid>.<hash>` for Claude Code, `4913`
+// and `~` variants for vim — created and renamed away between the filesystem
+// event and this call. Reporting it as a deletion adds a phantom to the file
+// tree that nothing can ever clear, one per edit.
+//
+// Deletions of files the shadow does know about are real, and still reported.
+func isTransient(shadowPath string) bool {
+	_, err := os.Stat(shadowPath)
+	return os.IsNotExist(err)
 }
 
 func isBinary(data []byte) bool {
