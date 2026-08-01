@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/swarmviz/swarmviz/pkg/hub"
@@ -316,5 +317,77 @@ func TestAPIAgentLabelDefaultsToID(t *testing.T) {
 	agents, _, _, _ := eventHub.GetInitSnapshot()
 	if agents["solo"].Label != "solo" {
 		t.Errorf("expected label to default to the id, got %q", agents["solo"].Label)
+	}
+}
+
+// The task shown on a node can arrive either with the agent or on its own, and
+// it must survive the periodic re-assert that keeps the node alive across a
+// restart of the visualiser.
+func TestAPIAgentTask(t *testing.T) {
+	srv, eventHub := newAPITestServer(t)
+
+	doAPI(t, srv, http.MethodPost, "/api/agents", map[string]interface{}{
+		"agent_id": "root", "agent_type": "orchestrator", "label": "Root",
+		"task": "ship the task labels",
+	}, nil)
+
+	agents, _, _, _ := eventHub.GetInitSnapshot()
+	if agents["root"].Task != "ship the task labels" {
+		t.Fatalf("task from create was not stored, got %q", agents["root"].Task)
+	}
+
+	rec := doAPI(t, srv, http.MethodPost, "/api/agents/root/task", map[string]interface{}{
+		"task": "review the diff",
+	}, nil)
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("expected 202 for task update, got %d (%s)", rec.Code, rec.Body.String())
+	}
+	agents, _, _, _ = eventHub.GetInitSnapshot()
+	if agents["root"].Task != "review the diff" {
+		t.Fatalf("task was not updated, got %q", agents["root"].Task)
+	}
+
+	// Re-assert without a task: the node is recreated, the task stays.
+	doAPI(t, srv, http.MethodPost, "/api/agents", map[string]interface{}{
+		"agent_id": "root", "agent_type": "orchestrator", "label": "Root",
+	}, nil)
+	agents, _, _, _ = eventHub.GetInitSnapshot()
+	if agents["root"].Task != "review the diff" {
+		t.Fatalf("re-assert wiped the task, got %q", agents["root"].Task)
+	}
+
+	// An explicit empty task clears it — an idle agent works on nothing.
+	doAPI(t, srv, http.MethodPost, "/api/agents/root/task", map[string]interface{}{"task": ""}, nil)
+	agents, _, _, _ = eventHub.GetInitSnapshot()
+	if agents["root"].Task != "" {
+		t.Fatalf("empty task should clear the field, got %q", agents["root"].Task)
+	}
+}
+
+// A whole user prompt can arrive as the task: it is flattened to one line and
+// bounded, because the node renders it inline and every snapshot carries it.
+func TestAPIAgentTaskIsFlattenedAndBounded(t *testing.T) {
+	srv, eventHub := newAPITestServer(t)
+
+	doAPI(t, srv, http.MethodPost, "/api/agents", map[string]interface{}{
+		"agent_id": "w1", "agent_type": "worker",
+	}, nil)
+	doAPI(t, srv, http.MethodPost, "/api/agents/w1/task", map[string]interface{}{
+		"task": "fix\n  the\tbuild",
+	}, nil)
+
+	agents, _, _, _ := eventHub.GetInitSnapshot()
+	if agents["w1"].Task != "fix the build" {
+		t.Fatalf("expected whitespace to be collapsed, got %q", agents["w1"].Task)
+	}
+
+	long := strings.Repeat("я", maxTaskRunes+50)
+	doAPI(t, srv, http.MethodPost, "/api/agents/w1/task", map[string]interface{}{"task": long}, nil)
+	agents, _, _, _ = eventHub.GetInitSnapshot()
+	if got := []rune(agents["w1"].Task); len(got) != maxTaskRunes+1 {
+		t.Fatalf("expected %d runes plus an ellipsis, got %d", maxTaskRunes, len(got))
+	}
+	if !strings.HasSuffix(agents["w1"].Task, "…") {
+		t.Errorf("truncated task should end with an ellipsis, got %q", agents["w1"].Task)
 	}
 }

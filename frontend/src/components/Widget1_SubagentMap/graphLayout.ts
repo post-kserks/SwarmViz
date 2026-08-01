@@ -6,8 +6,14 @@ export const getLayoutedElements = (nodes: Node[], edges: Edge[], direction = 'T
   dagreGraph.setDefaultEdgeLabel(() => ({}));
   dagreGraph.setGraph({ rankdir: direction, nodesep: 40, ranksep: 60 });
 
+  // Height covers the tallest node: header, two clamped lines of task text and
+  // the status row. dagre only knows the box it is told about, so understating
+  // it would let a node with a task overlap the rank below.
+  const NODE_WIDTH = 180;
+  const NODE_HEIGHT = 104;
+
   nodes.forEach((node) => {
-    dagreGraph.setNode(node.id, { width: 180, height: 70 });
+    dagreGraph.setNode(node.id, { width: NODE_WIDTH, height: NODE_HEIGHT });
   });
 
   edges.forEach((edge) => {
@@ -21,8 +27,9 @@ export const getLayoutedElements = (nodes: Node[], edges: Edge[], direction = 'T
     return {
       ...node,
       position: {
-        x: nodeWithPosition ? nodeWithPosition.x - 90 : 0,
-        y: nodeWithPosition ? nodeWithPosition.y - 35 : 0,
+        // dagre reports the node's centre; React Flow positions by top-left.
+        x: nodeWithPosition ? nodeWithPosition.x - NODE_WIDTH / 2 : 0,
+        y: nodeWithPosition ? nodeWithPosition.y - NODE_HEIGHT / 2 : 0,
       },
     };
   });

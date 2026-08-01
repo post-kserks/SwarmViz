@@ -5,6 +5,7 @@ import { AgentType, AgentStatus } from '../../types/swarm';
 
 export interface AgentCustomNodeData {
   label: string;
+  task?: string;
   type: AgentType;
   status: AgentStatus;
   activeClaimCount: number;
@@ -13,7 +14,7 @@ export interface AgentCustomNodeData {
 }
 
 export const AgentCustomNode: React.FC<NodeProps<any>> = ({ id, data }) => {
-  const { label, type, status, activeClaimCount, isHighPerfMode, onNodeClick } = data;
+  const { label, task, type, status, activeClaimCount, isHighPerfMode, onNodeClick } = data;
 
   const typeIcons: Record<string, React.ReactNode> = {
     orchestrator: <Shield className="w-4 h-4 text-purple-400" />,
@@ -57,6 +58,21 @@ export const AgentCustomNode: React.FC<NodeProps<any>> = ({ id, data }) => {
         </div>
         {status === 'ERROR' && <AlertTriangle className="w-3.5 h-3.5 text-rose-500 animate-bounce" />}
       </div>
+
+      {/* What the agent is doing. Two lines max: the node is fixed-width and
+          dagre lays the graph out from a fixed height, so an unbounded prompt
+          would overlap its neighbours. The full text is one hover (or click,
+          in the popover) away. */}
+      {task ? (
+        <div
+          title={task}
+          className="text-[10px] leading-snug text-slate-300/90 mb-1 line-clamp-2 break-words"
+        >
+          {task}
+        </div>
+      ) : (
+        <div className="text-[10px] leading-snug text-slate-600 italic mb-1">no task reported</div>
+      )}
 
       <div className="flex items-center justify-between text-[10px] font-mono mt-1">
         <span className="text-slate-400 capitalize">{status ? status.toLowerCase() : 'idle'}</span>

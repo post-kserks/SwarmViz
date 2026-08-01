@@ -18,11 +18,24 @@ import (
 // maxAPIBodyBytes caps request bodies so a stray client cannot exhaust memory.
 const maxAPIBodyBytes = 1 << 20 // 1MiB
 
+// maxTaskRunes bounds the task text kept per agent. A task usually arrives as a
+// whole user prompt, which can be arbitrarily long; the graph shows a couple of
+// lines of it, so anything past this is dead weight in every snapshot and every
+// WebSocket frame. Overlong text is trimmed rather than rejected — losing the
+// tail of a prompt beats losing the task entirely.
+const maxTaskRunes = 400
+
 type agentCreateRequest struct {
 	AgentID   string        `json:"agent_id"`
 	AgentType hub.AgentType `json:"agent_type"`
 	ParentID  string        `json:"parent_id"`
 	Label     string        `json:"label"`
+	Task      string        `json:"task"`
+}
+
+type agentTaskRequest struct {
+	AgentID string `json:"agent_id"`
+	Task    string `json:"task"`
 }
 
 type agentStatusRequest struct {
@@ -178,7 +191,7 @@ func (s *Server) handleAPI(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleAgentSubroute(w http.ResponseWriter, r *http.Request, rest string) {
 	parts := strings.SplitN(rest, "/", 2)
 	if len(parts) != 2 || parts[0] == "" {
-		writeAPIError(w, http.StatusNotFound, "expected /api/agents/{id}/{status|terminate|log}")
+		writeAPIError(w, http.StatusNotFound, "expected /api/agents/{id}/{status|task|terminate|log}")
 		return
 	}
 	agentID, action := parts[0], parts[1]
@@ -196,6 +209,18 @@ func (s *Server) handleAgentSubroute(w http.ResponseWriter, r *http.Request, res
 		}
 		req.AgentID = agentID
 		if err := s.applyAgentStatus(req); err != nil {
+			writeAPIError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		writeJSON(w, http.StatusAccepted, map[string]string{"agent_id": agentID})
+
+	case "task":
+		var req agentTaskRequest
+		if !decodeBody(w, r, &req) {
+			return
+		}
+		req.AgentID = agentID
+		if err := s.applyAgentTask(req); err != nil {
 			writeAPIError(w, http.StatusBadRequest, err.Error())
 			return
 		}
@@ -363,6 +388,16 @@ func (s *Server) prepareBatchEvent(ev batchEvent) (func() error, error) {
 		}
 		return func() error { return s.applyAgentStatus(req) }, nil
 
+	case "AGENT_TASK_CHANGED":
+		var req agentTaskRequest
+		if err := strict(&req); err != nil {
+			return nil, err
+		}
+		if err := validateAgentTask(req); err != nil {
+			return nil, err
+		}
+		return func() error { return s.applyAgentTask(req) }, nil
+
 	case "AGENT_TERMINATED":
 		var req agentTerminateRequest
 		if err := strict(&req); err != nil {
@@ -443,6 +478,25 @@ func validateAgentStatus(req agentStatusRequest) error {
 	return nil
 }
 
+func validateAgentTask(req agentTaskRequest) error {
+	if req.AgentID == "" {
+		return fmt.Errorf("agent_id is required")
+	}
+	return nil
+}
+
+// trimTask collapses the task to a single line and bounds its length. The graph
+// renders it inline, so an embedded newline would either be swallowed or blow
+// the node's layout, and a multi-paragraph prompt is unreadable there anyway.
+func trimTask(task string) string {
+	task = strings.TrimSpace(strings.Join(strings.Fields(task), " "))
+	runes := []rune(task)
+	if len(runes) > maxTaskRunes {
+		return strings.TrimSpace(string(runes[:maxTaskRunes])) + "…"
+	}
+	return task
+}
+
 func validateAgentTerminate(req agentTerminateRequest) error {
 	if req.AgentID == "" {
 		return fmt.Errorf("agent_id is required")
@@ -498,6 +552,21 @@ func (s *Server) applyAgentCreate(req agentCreateRequest) error {
 		label = req.AgentID
 	}
 	s.eventHub.AgentCreated(req.AgentID, req.AgentType, req.ParentID, label)
+	// A creating client that already knows the task states it here, so one call
+	// is enough on the common path (and a re-assert after a restart restores the
+	// task along with the node). Omitting the field leaves whatever task the
+	// agent already had untouched.
+	if task := trimTask(req.Task); task != "" {
+		s.eventHub.AgentTaskChanged(req.AgentID, task)
+	}
+	return nil
+}
+
+func (s *Server) applyAgentTask(req agentTaskRequest) error {
+	if err := validateAgentTask(req); err != nil {
+		return err
+	}
+	s.eventHub.AgentTaskChanged(req.AgentID, trimTask(req.Task))
 	return nil
 }
 

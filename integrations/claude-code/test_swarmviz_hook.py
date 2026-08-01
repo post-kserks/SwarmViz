@@ -261,6 +261,59 @@ class TestEnsureAgent(unittest.TestCase):
         self.assertIsNone(state.get("agent_seen_at"),
                           "неудачную попытку нельзя считать подтверждением")
 
+    def test_reassert_carries_current_task(self):
+        # Сервер после рестарта задачу не помнит, помнит только состояние сессии.
+        hook.ensure_agent("sess", self.TARGET, {"task": "почини сборку"})
+        self.assertEqual(self.posts[0][2]["task"], "почини сборку")
+
+
+class TestShortenTask(unittest.TestCase):
+    def test_collapses_whitespace(self):
+        self.assertEqual(hook.shorten_task("почини\n  сборку\tи тесты"),
+                         "почини сборку и тесты")
+
+    def test_truncates_long_prompt(self):
+        out = hook.shorten_task("а" * (hook.MAX_TASK_CHARS + 50))
+        self.assertEqual(len(out), hook.MAX_TASK_CHARS + 1)
+        self.assertTrue(out.endswith("…"))
+
+    def test_empty_prompt(self):
+        self.assertEqual(hook.shorten_task(""), "")
+        self.assertEqual(hook.shorten_task(None), "")
+
+
+class TestUserPrompt(unittest.TestCase):
+    """Промпт пользователя становится задачей на узле сессии."""
+
+    TARGET = {"base": "", "path": "/repos/SwarmViz", "id": "default", "name": "SwarmViz"}
+
+    def setUp(self):
+        self._call = hook.call
+        self.posts = []
+        hook.call = lambda method, path, payload=None, base="", timeout=None: (
+            self.posts.append((method, path, payload, base)) or {}
+        )
+
+    def tearDown(self):
+        hook.call = self._call
+
+    def test_prompt_is_sent_as_task(self):
+        state = {}
+        hook.cmd_user_prompt({"session_id": "abc12345", "prompt": "добавь задачу на узел"},
+                             self.TARGET, state)
+        paths = [p[1] for p in self.posts]
+        self.assertIn("/api/agents/claude-abc12345/task", paths)
+        task_post = next(p for p in self.posts if p[1].endswith("/task"))
+        self.assertEqual(task_post[2], {"task": "добавь задачу на узел"})
+        self.assertEqual(state["task"], "добавь задачу на узел",
+                         "задачу надо запомнить, иначе рестарт сервера её потеряет")
+
+    def test_empty_prompt_is_ignored(self):
+        state = {}
+        hook.cmd_user_prompt({"session_id": "abc12345", "prompt": "   "}, self.TARGET, state)
+        self.assertEqual(self.posts, [])
+        self.assertNotIn("task", state)
+
 
 if __name__ == "__main__":
     unittest.main()

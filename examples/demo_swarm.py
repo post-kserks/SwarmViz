@@ -59,13 +59,18 @@ class SwarmVizClient:
     def health(self):
         return self._request("GET", "/api/health")
 
-    def create_agent(self, agent_id, agent_type, label, parent_id=""):
+    def create_agent(self, agent_id, agent_type, label, parent_id="", task=""):
         return self._request("POST", "/api/agents", {
             "agent_id": agent_id,
             "agent_type": agent_type,
             "parent_id": parent_id,
             "label": label,
+            "task": task,
         })
+
+    def task(self, agent_id, task):
+        """What this agent is working on right now; "" while it is idle."""
+        return self._request("POST", f"/api/agents/{agent_id}/task", {"task": task})
 
     def edge(self, from_id, to_id, kind="TASK_DELEGATION"):
         return self._request("POST", "/api/edges", {
@@ -152,7 +157,8 @@ def main():
     ensure_repo(args.repo)
     print(f"watching repository {args.repo}")
 
-    client.create_agent("orchestrator", "orchestrator", "Orchestrator")
+    client.create_agent("orchestrator", "orchestrator", "Orchestrator",
+                        task="Раздать правки воркерам и дождаться ревью")
     workers = [f"worker-{i + 1}" for i in range(args.workers)]
 
     setup = []
@@ -167,6 +173,7 @@ def main():
     setup.append({"type": "AGENT_CREATED", "data": {
         "agent_id": "challenger", "agent_type": "challenger",
         "parent_id": "orchestrator", "label": "Reviewer",
+        "task": "Ждёт очередной раунд правок",
     }})
     setup.append({"type": "AGENT_EDGE", "data": {
         "from_id": "orchestrator", "to_id": "challenger", "kind": "REVIEW_REQUEST",
@@ -182,6 +189,7 @@ def main():
             rel = random.choice(WORKER_FILES)
 
             client.status(worker, "RUNNING")
+            client.task(worker, f"Раунд {round_no}: правит {rel}")
             client.log(worker, f"editing {rel}")
 
             # Claim first: this is what makes the diff 'claimed' rather than
@@ -191,15 +199,20 @@ def main():
             time.sleep(args.delay)
             client.release(claim_id)
             client.status(worker, "WAITING")
+            # Пустая задача = агент простаивает; иначе на узле висела бы правка,
+            # которую он уже закончил.
+            client.task(worker, "")
 
             print(f"round {round_no}: {worker} edited {rel}")
 
             if round_no % 4 == 0:
                 client.status("challenger", "RUNNING")
+                client.task("challenger", f"Ревью раунда {round_no}: {rel}")
                 client.log("challenger", f"reviewing round {round_no}", level="warn")
                 client.edge("challenger", worker, "REVIEW_REQUEST")
                 time.sleep(args.delay / 2)
                 client.status("challenger", "WAITING")
+                client.task("challenger", "Ждёт очередной раунд правок")
 
     except KeyboardInterrupt:
         print("\ninterrupted")

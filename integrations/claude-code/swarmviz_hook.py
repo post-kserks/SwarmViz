@@ -8,7 +8,11 @@ claim-then-diff, на котором держится вся атрибуция.
 
 Вызывается так (см. README.md и settings.example.json):
 
-    swarmviz_hook.py session-start|pre-tool|post-tool|stop|session-end
+    swarmviz_hook.py session-start|user-prompt|pre-tool|post-tool|stop|session-end
+
+Задача, которая сейчас выполняется, подписывается прямо на узле агента: для
+сессии это последний промпт пользователя (`user-prompt`), для сабагента —
+описание делегирования из вызова Task.
 
 Полезная нагрузка хука читается из stdin как JSON. Скрипт никогда не должен
 ломать работу Claude Code: любая ошибка гасится, код возврата всегда 0.
@@ -52,6 +56,10 @@ EDIT_TOOLS = {"Edit", "Write", "NotebookEdit", "MultiEdit"}
 DELEGATION_TOOL = "Task"
 # Как часто подтверждать существование агента на сервере (см. ensure_agent).
 AGENT_REASSERT_SEC = 30
+# Сколько символов задачи отправлять. На узле видны две строки, остальное — в
+# поповере; сервер всё равно режет своё (maxTaskRunes), здесь просто не гоняем
+# лишнее по сети на каждый промпт.
+MAX_TASK_CHARS = 300
 
 BASE_URL = os.environ.get("SWARMVIZ_URL", "http://127.0.0.1:8942").rstrip("/")
 TOKEN = os.environ.get("SWARMVIZ_TOKEN") or None
@@ -107,7 +115,8 @@ def load_state(session_id):
         with open(state_path(session_id)) as fh:
             return json.load(fh)
     except Exception:
-        return {"agent_seen_at": None, "claims": {}, "workers": {}, "project": None}
+        return {"agent_seen_at": None, "claims": {}, "workers": {},
+                "project": None, "task": ""}
 
 
 def save_state(session_id, state):
@@ -179,6 +188,21 @@ def agent_label(target):
     if pane:
         return f"Claude [{pane}]"
     return f"Claude · {target['name']}"
+
+
+def shorten_task(text):
+    """Промпт -> однострочная подпись задачи для узла.
+
+    Промпт бывает многострочным (списки, вставленные логи, код), а на узле
+    задача живёт в две строки — переносы там всё равно схлопываются, поэтому
+    склеиваем в одну строку сразу, чтобы обрезка считала настоящую длину.
+    """
+    if not text:
+        return ""
+    flat = " ".join(str(text).split())
+    if len(flat) > MAX_TASK_CHARS:
+        return flat[:MAX_TASK_CHARS].rstrip() + "…"
+    return flat
 
 
 def worker_id_for(session_id, tool_input):
@@ -359,6 +383,10 @@ def ensure_agent(session_id, target, state):
     Поэтому запись периодически подтверждается: `POST /api/agents`
     идемпотентен (хаб кладёт узел по agent_id), а лишний запрос раз в
     AGENT_REASSERT_SEC на фоне остальных вызовов хука ничего не стоит.
+
+    Вместе с узлом восстанавливается и текущая задача: она хранится в состоянии
+    сессии, а сервер после рестарта о ней не знает — иначе до следующего
+    промпта агент висел бы на карте без подписи.
     """
     now = time.time()
     seen = state.get("agent_seen_at")
@@ -369,6 +397,7 @@ def ensure_agent(session_id, target, state):
         "agent_type": "orchestrator",
         "parent_id": "",
         "label": agent_label(target),
+        "task": state.get("task") or "",
     }, base=target["base"], timeout=COLD_START_TIMEOUT)
     if ok is not None:
         state["agent_seen_at"] = now
@@ -387,6 +416,25 @@ def cmd_session_start(payload, target, state):
          {"status": "RUNNING"}, base=target["base"])
 
 
+def cmd_user_prompt(payload, target, state):
+    """UserPromptSubmit: то, о чём попросили — и есть текущая задача сессии.
+
+    Ничего лучше промпта у хука нет: план и ход рассуждений Claude Code хукам
+    не отдаёт, а вот исходная формулировка приходит целиком и меняется ровно
+    тогда, когда сессия берётся за новое дело.
+    """
+    session_id = payload.get("session_id", "")
+    task = shorten_task(payload.get("prompt", ""))
+    if not task:
+        return
+    state["task"] = task
+    ensure_agent(session_id, target, state)
+    call("POST", f"/api/agents/{agent_id_for(session_id)}/task",
+         {"task": task}, base=target["base"])
+    call("POST", f"/api/agents/{agent_id_for(session_id)}/status",
+         {"status": "RUNNING"}, base=target["base"])
+
+
 def cmd_pre_tool(payload, target, state):
     session_id = payload.get("session_id", "")
     tool = payload.get("tool_name", "")
@@ -400,9 +448,13 @@ def cmd_pre_tool(payload, target, state):
         worker = worker_id_for(session_id, tool_input)
         label = (tool_input.get("description")
                  or tool_input.get("subagent_type") or "subagent")
+        # Подпись узла — короткое описание делегирования, задача — сам промпт
+        # сабагента: именно его он и выполняет, а описание из трёх слов о работе
+        # почти ничего не говорит.
+        task = shorten_task(tool_input.get("prompt") or label)
         call("POST", "/api/agents", {
             "agent_id": worker, "agent_type": "worker",
-            "parent_id": agent, "label": label[:60],
+            "parent_id": agent, "label": label[:60], "task": task,
         }, base=base)
         call("POST", "/api/edges", {
             "from_id": agent, "to_id": worker, "kind": "TASK_DELEGATION",
@@ -476,6 +528,7 @@ def cmd_session_end(payload, target, state):
 
 COMMANDS = {
     "session-start": cmd_session_start,
+    "user-prompt": cmd_user_prompt,
     "pre-tool": cmd_pre_tool,
     "post-tool": cmd_post_tool,
     "stop": cmd_stop,
