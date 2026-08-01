@@ -292,3 +292,38 @@ func TestConflictResolvesOnlyWhenAnAgentFullyLetsGo(t *testing.T) {
 
 	h.ReleaseClaim(b1)
 }
+
+func TestAgentTaskChangedNotifiesListeners(t *testing.T) {
+	h := NewEventHub()
+
+	var events []HubEvent
+	unsubscribe := h.Subscribe(func(ev HubEvent) { events = append(events, ev) })
+	defer unsubscribe()
+
+	h.AgentCreated("a1", Worker, "", "Worker 1")
+	h.AgentTaskChanged("a1", "rewrite the parser")
+	// An unknown agent still produces an event: whoever reports tasks may run
+	// ahead of whoever creates the node.
+	h.AgentTaskChanged("ghost", "something")
+	h.AgentTaskChanged("", "ignored")
+
+	var taskEvents []HubEvent
+	for _, ev := range events {
+		if ev.Type == "AGENT_TASK_CHANGED" {
+			taskEvents = append(taskEvents, ev)
+		}
+	}
+	if len(taskEvents) != 2 {
+		t.Fatalf("expected 2 task events (empty id dropped), got %d", len(taskEvents))
+	}
+
+	data := taskEvents[0].Data.(map[string]interface{})
+	if data["agent_id"] != "a1" || data["task"] != "rewrite the parser" {
+		t.Errorf("unexpected task event payload: %+v", data)
+	}
+
+	agents, _, _, _ := h.GetInitSnapshot()
+	if agents["a1"].Task != "rewrite the parser" {
+		t.Errorf("task was not stored on the node, got %q", agents["a1"].Task)
+	}
+}

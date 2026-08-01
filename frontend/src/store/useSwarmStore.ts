@@ -87,6 +87,7 @@ export interface SwarmVizStore {
   handleInitState: (data: any) => void;
   addAgent: (data: any) => void;
   updateAgentStatus: (agentId: string, status: any) => void;
+  updateAgentTask: (agentId: string, task: string) => void;
   addEdge: (edgeData: any) => void;
   terminateAgent: (agentId: string, reason: string) => void;
   addClaim: (agentId: string, file: string, claimId: string, ts: string) => void;
@@ -134,6 +135,9 @@ export const useSwarmStore = create<SwarmVizStore>((set, get) => {
           break;
         case 'AGENT_STATUS_CHANGED':
           state.updateAgentStatus(data.agent_id, data.status);
+          break;
+        case 'AGENT_TASK_CHANGED':
+          state.updateAgentTask(data.agent_id, data.task || '');
           break;
         case 'AGENT_EDGE':
           state.addEdge(data);
@@ -239,6 +243,7 @@ export const useSwarmStore = create<SwarmVizStore>((set, get) => {
         type: a.agent_type || a.type,
         parentId: a.parent_id || a.parentId || null,
         label: a.label || a.agent_id || a.id,
+        task: a.task || '',
         status: a.status || 'IDLE',
         logs: a.logs || [],
         terminatedReason: a.terminated_reason || a.terminatedReason,
@@ -333,20 +338,28 @@ export const useSwarmStore = create<SwarmVizStore>((set, get) => {
       });
     },
 
+    // AGENT_CREATED is re-sent to keep an agent alive across restarts of the
+    // visualiser, so treat it as an upsert: a re-assert that carries no task
+    // must not blank out the task the node is already showing.
     addAgent: (data: any) =>
-      set((state) => ({
-        agents: {
-          ...state.agents,
-          [data.agent_id || data.id]: {
-            id: data.agent_id || data.id,
-            type: data.agent_type || data.type,
-            parentId: data.parent_id || data.parentId || null,
-            label: data.label || data.agent_id || data.id,
-            status: data.status || 'RUNNING',
-            logs: data.logs || [],
+      set((state) => {
+        const id = data.agent_id || data.id;
+        const existing = state.agents[id];
+        return {
+          agents: {
+            ...state.agents,
+            [id]: {
+              id,
+              type: data.agent_type || data.type,
+              parentId: data.parent_id || data.parentId || null,
+              label: data.label || data.agent_id || data.id,
+              task: data.task || existing?.task || '',
+              status: data.status || 'RUNNING',
+              logs: data.logs || existing?.logs || [],
+            },
           },
-        },
-      })),
+        };
+      }),
 
     updateAgentStatus: (agentId: string, status: any) =>
       set((state) => {
@@ -356,6 +369,18 @@ export const useSwarmStore = create<SwarmVizStore>((set, get) => {
           agents: {
             ...state.agents,
             [agentId]: { ...agent, status },
+          },
+        };
+      }),
+
+    updateAgentTask: (agentId: string, task: string) =>
+      set((state) => {
+        const agent = state.agents[agentId];
+        if (!agent) return state;
+        return {
+          agents: {
+            ...state.agents,
+            [agentId]: { ...agent, task },
           },
         };
       }),

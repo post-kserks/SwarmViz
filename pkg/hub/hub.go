@@ -79,6 +79,14 @@ func (h *EventHub) AgentCreated(id string, agentType AgentType, parentID string,
 	}
 
 	h.mu.Lock()
+	// Creation is idempotent — clients re-assert their agent periodically so the
+	// node survives a restart of the visualiser. A re-assert must not wipe the
+	// task the agent is in the middle of; that is cleared or replaced only
+	// through AgentTaskChanged.
+	if prev, exists := h.agents[id]; exists {
+		node.Task = prev.Task
+		node.CreatedAt = prev.CreatedAt
+	}
 	h.agents[id] = node
 	event := HubEvent{
 		Type:      "AGENT_CREATED",
@@ -88,6 +96,39 @@ func (h *EventHub) AgentCreated(id string, agentType AgentType, parentID string,
 			"agent_type": agentType,
 			"parent_id":  parentID,
 			"label":      label,
+			"task":       node.Task,
+		},
+	}
+	listeners := h.snapshotListenersLocked()
+	h.mu.Unlock()
+
+	h.dispatch(listeners, event)
+}
+
+// AgentTaskChanged records what the agent is working on right now. An empty
+// task clears it — a session that finished its turn is not doing anything, and
+// leaving the previous prompt on the node would misreport it as still busy.
+//
+// The event is emitted even for an unknown agent id: the client that reports
+// tasks may race ahead of the one that creates the node, and dropping the
+// update silently would strand the node without a task until the next change.
+func (h *EventHub) AgentTaskChanged(id string, task string) {
+	if id == "" {
+		return
+	}
+	now := time.Now().UTC()
+
+	h.mu.Lock()
+	if agent, exists := h.agents[id]; exists {
+		agent.Task = task
+		agent.UpdatedAt = now
+	}
+	event := HubEvent{
+		Type:      "AGENT_TASK_CHANGED",
+		Timestamp: now,
+		Data: map[string]interface{}{
+			"agent_id": id,
+			"task":     task,
 		},
 	}
 	listeners := h.snapshotListenersLocked()

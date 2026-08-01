@@ -52,10 +52,16 @@ const (
 )
 
 type AgentNode struct {
-	ID        string      `json:"agent_id"`
-	Type      AgentType   `json:"agent_type"`
-	ParentID  string      `json:"parent_id,omitempty"`
-	Label     string      `json:"label"`
+	ID       string    `json:"agent_id"`
+	Type     AgentType `json:"agent_type"`
+	ParentID string    `json:"parent_id,omitempty"`
+	Label    string    `json:"label"`
+	// Task is what the agent is currently working on, in the words of whoever
+	// asked for it: the user's prompt for a session, the delegation
+	// description for a subagent. Label answers "which agent is this", Task
+	// answers "what is it doing right now", and only the latter changes as the
+	// agent moves from one piece of work to the next.
+	Task      string      `json:"task,omitempty"`
 	Status    AgentStatus `json:"status"`
 	CreatedAt time.Time   `json:"created_at"`
 	UpdatedAt time.Time   `json:"updated_at"`
@@ -102,14 +108,15 @@ type HubEvent struct {
 type EventListener func(event HubEvent)
 
 type InitState struct {
-	Agents       map[string]*AgentNode      `json:"agents"`
-	Edges        []AgentEdge                `json:"edges"`
+	Agents       map[string]*AgentNode       `json:"agents"`
+	Edges        []AgentEdge                 `json:"edges"`
 	ActiveClaims map[string]*ActiveClaimInfo `json:"active_claims"`
-	Conflicts    map[string][]string        `json:"conflicts"`
+	Conflicts    map[string][]string         `json:"conflicts"`
 }
 
 type AgentEventHub interface {
 	AgentCreated(id string, agentType AgentType, parentID string, label string)
+	AgentTaskChanged(id string, task string)
 	AgentStatusChanged(id string, status AgentStatus)
 	AgentTerminated(id string, reason string)
 	AgentEdge(fromID, toID string, kind EdgeKind)

@@ -137,8 +137,9 @@ Python, Node, Bash или чём угодно ещё может наполнят
 |---|---|---|---|
 | `GET` | `/api/health` | — | `{"status":"ok"}` (без токена) |
 | `GET` | `/api/state` | — | Полный снимок: агенты, рёбра, claim'ы, дерево файлов, LOC |
-| `POST` | `/api/agents` | `{"agent_id","agent_type","parent_id","label"}` | `201 {"agent_id"}` |
+| `POST` | `/api/agents` | `{"agent_id","agent_type","parent_id","label","task"}` | `201 {"agent_id"}` |
 | `POST` | `/api/agents/{id}/status` | `{"status"}` | `202` |
+| `POST` | `/api/agents/{id}/task` | `{"task"}` | `202` |
 | `POST` | `/api/agents/{id}/terminate` | `{"reason"}` | `202` |
 | `POST` | `/api/agents/{id}/log` | `{"level","message"}` | `202` |
 | `POST` | `/api/edges` | `{"from_id","to_id","kind"}` | `201` |
@@ -150,6 +151,13 @@ Python, Node, Bash или чём угодно ещё может наполнят
 `status` — `IDLE \| RUNNING \| WAITING \| DONE \| ERROR`;
 `kind` — `TASK_DELEGATION \| DATA_PASS \| REVIEW_REQUEST`;
 `level` — `debug \| info \| warn \| error`.
+
+`task` — то, чем агент занят прямо сейчас (у сессии Claude Code это промпт
+пользователя, у сабагента — задание делегирования). Текст виден прямо на узле
+графа: две строки на карте, целиком — в поповере агента. Поле необязательное:
+при создании агента его можно не слать, а пустая строка в
+`/api/agents/{id}/task` задачу снимает. Длинный текст схлопывается в одну строку
+и обрезается до 400 символов.
 
 Неизвестные поля и значения отклоняются с `400`. Пакетный `/api/events`
 применяется по принципу «всё или ничего»: одна ошибка отменяет весь пакет,
@@ -198,6 +206,7 @@ python3 examples/demo_swarm.py --repo /tmp/demo-repo
 ```go
 type AgentEventHub interface {
     AgentCreated(id string, agentType AgentType, parentID string, label string)
+    AgentTaskChanged(id string, task string)
     AgentStatusChanged(id string, status AgentStatus)
     AgentTerminated(id string, reason string)
     AgentEdge(fromID, toID string, kind EdgeKind)

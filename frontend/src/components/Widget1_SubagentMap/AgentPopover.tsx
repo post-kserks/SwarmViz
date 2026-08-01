@@ -1,5 +1,5 @@
 import React from 'react';
-import { X, Play, Pause, AlertCircle, FileCode, Terminal } from 'lucide-react';
+import { X, Play, Pause, AlertCircle, FileCode, ListTodo, Terminal } from 'lucide-react';
 import { useSwarmStore, useCurrentBasePath } from '../../store/useSwarmStore';
 import { useSwarmSocket } from '../../hooks/useSwarmSocket';
 
@@ -38,6 +38,20 @@ export const AgentPopover: React.FC<AgentPopoverProps> = ({ agentId, onClose }) 
         <button onClick={onClose} className="text-slate-400 hover:text-white p-1">
           <X className="w-4 h-4" />
         </button>
+      </div>
+
+      {/* Current task, in full — the node itself only has room for two lines */}
+      <div className="mb-3">
+        <div className="text-slate-400 font-mono text-[10px] mb-1 flex items-center gap-1">
+          <ListTodo className="w-3 h-3" /> CURRENT TASK
+        </div>
+        {agent.task ? (
+          <div className="text-[11px] text-slate-200 bg-slate-900/60 px-2 py-1.5 rounded border border-slate-800 max-h-24 overflow-y-auto whitespace-pre-wrap break-words">
+            {agent.task}
+          </div>
+        ) : (
+          <div className="text-slate-600 italic text-[11px]">No task reported by orchestrator</div>
+        )}
       </div>
 
       {/* Control Buttons */}

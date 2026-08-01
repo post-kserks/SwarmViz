@@ -8,10 +8,18 @@ claim-then-diff, на котором держится вся атрибуция.
 
 Вызывается так (см. README.md и settings.example.json):
 
-    swarmviz_hook.py session-start|pre-tool|post-tool|stop|session-end
+    swarmviz_hook.py session-start|user-prompt|pre-tool|post-tool|stop|session-end
+
+Задача, которая сейчас выполняется, подписывается прямо на узле агента: для
+сессии это последний промпт пользователя (`user-prompt`), для сабагента —
+описание делегирования из вызова Task.
 
 Полезная нагрузка хука читается из stdin как JSON. Скрипт никогда не должен
 ломать работу Claude Code: любая ошибка гасится, код возврата всегда 0.
+
+Сессия, запущенная в панели tmux, подписывается её координатами
+(`Claude [claude:0.1]` вместо `Claude · проект`), чтобы параллельные сессии в
+одном репозитории различались на карте.
 
 Хуки ставятся глобально, в ~/.claude/settings.json, и действуют на все проекты
 сразу. Поэтому скрипт сам выясняет, в каком репозитории идёт сессия, спрашивает
@@ -35,6 +43,7 @@ import os
 import subprocess
 import sys
 import tempfile
+import time
 import urllib.error
 import urllib.request
 
@@ -45,6 +54,12 @@ TIMEOUT = 1.5
 COLD_START_TIMEOUT = 8.0
 EDIT_TOOLS = {"Edit", "Write", "NotebookEdit", "MultiEdit"}
 DELEGATION_TOOL = "Task"
+# Как часто подтверждать существование агента на сервере (см. ensure_agent).
+AGENT_REASSERT_SEC = 30
+# Сколько символов задачи отправлять. На узле видны две строки, остальное — в
+# поповере; сервер всё равно режет своё (maxTaskRunes), здесь просто не гоняем
+# лишнее по сети на каждый промпт.
+MAX_TASK_CHARS = 300
 
 BASE_URL = os.environ.get("SWARMVIZ_URL", "http://127.0.0.1:8942").rstrip("/")
 TOKEN = os.environ.get("SWARMVIZ_TOKEN") or None
@@ -100,7 +115,8 @@ def load_state(session_id):
         with open(state_path(session_id)) as fh:
             return json.load(fh)
     except Exception:
-        return {"agent_created": False, "claims": {}, "workers": {}, "project": None}
+        return {"agent_seen_at": None, "claims": {}, "workers": {},
+                "project": None, "task": ""}
 
 
 def save_state(session_id, state):
@@ -127,6 +143,66 @@ def drop_state(session_id):
 
 def agent_id_for(session_id):
     return "claude-" + (session_id or "unknown")[:8]
+
+
+def tmux_context():
+    """`сессия:окно.панель` tmux, в которой идёт сессия, либо None.
+
+    tmux экспортирует `TMUX`/`TMUX_PANE` в запущенный в панели процесс, Claude
+    Code передаёт своё окружение хукам — значит внутри панели переменные видны,
+    а снаружи (обычный терминал, VS Code) их нет и метки не будет.
+
+    Спрашиваем человекочитаемое имя у самого tmux; если бинарника нет или
+    сервер не ответил, сгодится и сырой id панели (`%3`) — задача метки в том,
+    чтобы параллельные сессии в разных панелях не выглядели одинаково.
+    """
+    pane = os.environ.get("TMUX_PANE")
+    if not pane or not os.environ.get("TMUX"):
+        return None
+    try:
+        out = subprocess.run(
+            ["tmux", "display-message", "-p", "-t", pane, "#S:#I.#P"],
+            capture_output=True, text=True, timeout=TIMEOUT,
+        )
+        if out.returncode == 0 and out.stdout.strip():
+            return out.stdout.strip()
+        debug(f"tmux display-message -t {pane} -> код {out.returncode}")
+    except Exception as exc:
+        debug(f"tmux display-message не отработал: {exc}")
+    return pane
+
+
+def agent_label(target):
+    """Подпись узла сессии: панель tmux, если сессия в ней, иначе проект.
+
+    Идентификатор агента завязан на session_id и так уникален, но на карте
+    видна именно подпись — без панели несколько параллельных сессий в одном
+    репозитории превращаются в одинаковые «Claude · проект».
+
+    Панель вытесняет имя проекта, а не дописывается к нему: узел на карте узкий
+    и режет подпись по ширине, а внутри одного проекта имя проекта у всех
+    сессий и так одинаковое — различает как раз панель. Вне tmux подпись
+    прежняя.
+    """
+    pane = tmux_context()
+    if pane:
+        return f"Claude [{pane}]"
+    return f"Claude · {target['name']}"
+
+
+def shorten_task(text):
+    """Промпт -> однострочная подпись задачи для узла.
+
+    Промпт бывает многострочным (списки, вставленные логи, код), а на узле
+    задача живёт в две строки — переносы там всё равно схлопываются, поэтому
+    склеиваем в одну строку сразу, чтобы обрезка считала настоящую длину.
+    """
+    if not text:
+        return ""
+    flat = " ".join(str(text).split())
+    if len(flat) > MAX_TASK_CHARS:
+        return flat[:MAX_TASK_CHARS].rstrip() + "…"
+    return flat
 
 
 def worker_id_for(session_id, tool_input):
@@ -297,17 +373,34 @@ def relative_path(target, file_path):
 # --------------------------------------------------------------------------
 
 def ensure_agent(session_id, target, state):
-    """Создаёт агента сессии один раз за сессию."""
-    if state.get("agent_created"):
+    """Поддерживает существование узла сессии на сервере.
+
+    Не «создать один раз»: хаб держит агентов только в памяти, поэтому после
+    рестарта SwarmViz узел исчезает, а сессия Claude Code живёт дальше. Липкий
+    флаг «уже создан» означал бы, что до конца сессии claim'ы уходят агенту,
+    которого сервер не знает — правки видны, а на карте пусто.
+
+    Поэтому запись периодически подтверждается: `POST /api/agents`
+    идемпотентен (хаб кладёт узел по agent_id), а лишний запрос раз в
+    AGENT_REASSERT_SEC на фоне остальных вызовов хука ничего не стоит.
+
+    Вместе с узлом восстанавливается и текущая задача: она хранится в состоянии
+    сессии, а сервер после рестарта о ней не знает — иначе до следующего
+    промпта агент висел бы на карте без подписи.
+    """
+    now = time.time()
+    seen = state.get("agent_seen_at")
+    if isinstance(seen, (int, float)) and 0 <= now - seen < AGENT_REASSERT_SEC:
         return
     ok = call("POST", "/api/agents", {
         "agent_id": agent_id_for(session_id),
         "agent_type": "orchestrator",
         "parent_id": "",
-        "label": f"Claude · {target['name']}",
+        "label": agent_label(target),
+        "task": state.get("task") or "",
     }, base=target["base"], timeout=COLD_START_TIMEOUT)
     if ok is not None:
-        state["agent_created"] = True
+        state["agent_seen_at"] = now
 
 
 def release_previous_claim(target, state, rel):
@@ -319,6 +412,25 @@ def release_previous_claim(target, state, rel):
 def cmd_session_start(payload, target, state):
     session_id = payload.get("session_id", "")
     ensure_agent(session_id, target, state)
+    call("POST", f"/api/agents/{agent_id_for(session_id)}/status",
+         {"status": "RUNNING"}, base=target["base"])
+
+
+def cmd_user_prompt(payload, target, state):
+    """UserPromptSubmit: то, о чём попросили — и есть текущая задача сессии.
+
+    Ничего лучше промпта у хука нет: план и ход рассуждений Claude Code хукам
+    не отдаёт, а вот исходная формулировка приходит целиком и меняется ровно
+    тогда, когда сессия берётся за новое дело.
+    """
+    session_id = payload.get("session_id", "")
+    task = shorten_task(payload.get("prompt", ""))
+    if not task:
+        return
+    state["task"] = task
+    ensure_agent(session_id, target, state)
+    call("POST", f"/api/agents/{agent_id_for(session_id)}/task",
+         {"task": task}, base=target["base"])
     call("POST", f"/api/agents/{agent_id_for(session_id)}/status",
          {"status": "RUNNING"}, base=target["base"])
 
@@ -336,9 +448,13 @@ def cmd_pre_tool(payload, target, state):
         worker = worker_id_for(session_id, tool_input)
         label = (tool_input.get("description")
                  or tool_input.get("subagent_type") or "subagent")
+        # Подпись узла — короткое описание делегирования, задача — сам промпт
+        # сабагента: именно его он и выполняет, а описание из трёх слов о работе
+        # почти ничего не говорит.
+        task = shorten_task(tool_input.get("prompt") or label)
         call("POST", "/api/agents", {
             "agent_id": worker, "agent_type": "worker",
-            "parent_id": agent, "label": label[:60],
+            "parent_id": agent, "label": label[:60], "task": task,
         }, base=base)
         call("POST", "/api/edges", {
             "from_id": agent, "to_id": worker, "kind": "TASK_DELEGATION",
@@ -412,6 +528,7 @@ def cmd_session_end(payload, target, state):
 
 COMMANDS = {
     "session-start": cmd_session_start,
+    "user-prompt": cmd_user_prompt,
     "pre-tool": cmd_pre_tool,
     "post-tool": cmd_post_tool,
     "stop": cmd_stop,

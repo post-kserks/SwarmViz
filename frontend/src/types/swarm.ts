@@ -26,6 +26,8 @@ export interface AgentNode {
   type: AgentType;
   parentId?: string | null;
   label: string;
+  /** What the agent is working on right now; empty when it is idle. */
+  task?: string;
   status: AgentStatus;
   logs: AgentLogEntry[];
   terminatedReason?: string;
@@ -97,6 +99,7 @@ export type WSEventType =
   | 'INIT_STATE'
   | 'AGENT_CREATED'
   | 'AGENT_STATUS_CHANGED'
+  | 'AGENT_TASK_CHANGED'
   | 'AGENT_EDGE'
   | 'AGENT_TERMINATED'
   | 'AGENT_EDIT_CLAIM'
@@ -140,11 +143,17 @@ export interface AgentCreatedData {
   agent_type: AgentType;
   parent_id?: string;
   label: string;
+  task?: string;
 }
 
 export interface AgentStatusChangedData {
   agent_id: string;
   status: AgentStatus;
+}
+
+export interface AgentTaskChangedData {
+  agent_id: string;
+  task: string;
 }
 
 export interface AgentEdgeDataPayload {

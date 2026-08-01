@@ -37,6 +37,7 @@ export const SubagentMapWidget: React.FC = () => {
         type: 'agentNode',
         data: {
           label: ag.label || ag.id,
+          task: ag.task || '',
           type: ag.type,
           status: ag.status,
           activeClaimCount: claimCount,
