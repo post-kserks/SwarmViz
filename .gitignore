@@ -24,6 +24,7 @@ ehthumbs.db
 Thumbs.db
 .vscode/
 .idea/
+.claude/
 
 # Logs & temporary files
 *.log
